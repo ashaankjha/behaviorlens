@@ -30,6 +30,7 @@ Last updated: 2026-10-18
 | SessionStart cost | A cold `session-start.sh` (venv, requirements, ruff, playwright, model) takes about 40 s; a warm run under 1 s. It runs synchronously so tests never race the install. |
 | Real validation data | Hugging Face hosts a 126-clip **Charades** sample with individual MP4s and parquet metadata (labels and `action_timings`): `Aditya02/Charades-Action-Sequence-Sample`. Label 154 is "standing up", 151 is "sitting down"; sitting and door/light activities give per-frame posture ground truth. The full UCF101 zip (`quchenyuan/UCF101-ZIP`, 7 GB) supports HTTP **Range** requests, so `zipfile` over a seekable HTTP reader extracts single classes without downloading the archive (`HttpRangeFile` in `scripts/fetch_validation_clips.py`). |
 | Validation cost | 166 clips at 5 fps through `pose_landmarker_lite` with 4 processes took about 2.5 min (~9 CPU-min). Landmarks are cached in `data/validation/cache/`, so re-scoring rules takes seconds. |
+| Cloud sessions | `create_session` (claude-code-remote MCP) starts a child cloud session from a repo and branch. Set `outcome_branch` to a non-`main` branch and `permission_mode: auto` (`plan` would stall unattended). Children don't report back on a clean finish: poll with `get_session` and `list_events`, or arm a `send_later` check-in. |
 | Streamlit testing | `streamlit.testing.v1.AppTest` runs the script headlessly and supports clicking buttons. It can't click Plotly charts; use Playwright for that. |
 
 ## 3. Mistakes and their fixes
@@ -69,6 +70,8 @@ Last updated: 2026-10-18
 - **Exports omit the source filename** (it may contain a person's name) and use the content SHA-256 instead.
 - **Before/after thumbnails** are taken 0.5 s outside the event interval (clamped to the video), cached as JPEGs keyed by timestamp so edits regenerate them, and shown only in the UI.
 - **Thumbnails and overlays** live under `data/sessions/<id>/` so Delete session removes them, and they're never exported.
+
+- **Parallel work goes to child cloud sessions on separate branches** and is merged by the parent after review. First use: a clean-room README audit (`audit/clean-room-readme`) and a pose-model comparison (`experiment/pose-model-comparison`).
 
 ## 5. Verification recipes that worked
 

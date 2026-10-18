@@ -50,7 +50,12 @@ In Claude Code cloud sessions, `.claude/hooks/session-start.sh` does the setup a
   - `e2e-verify-streamlit`: launch the app and drive it with Playwright, with screenshots
   - `update-learnings`: how to maintain `docs/LEARNINGS.md`
   - `validate-real-video`: real-footage metrics with tune/holdout discipline
+  - `spawn-cloud-session`: delegate independent work to parallel cloud sessions on their own branches, then review and merge
 - Hooks in `.claude/settings.json`:
   - SessionStart (cloud setup)
   - PostToolUse (ruff on edited `.py` files)
   - PreToolUse (block self-matching `pkill -f`/`pgrep -f`)
+
+## Parallel cloud sessions
+
+The owner wants new cloud sessions spawned **whenever necessary** for independent work (audits, experiments, long validations, isolated features). Children work on their own `audit/`, `experiment/` or `feature/` branches and never push to `main`. This session reviews, tests and merges their work. See the `spawn-cloud-session` skill.
