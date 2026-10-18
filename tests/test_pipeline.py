@@ -251,3 +251,24 @@ def test_validation_harness_helpers_are_deterministic():
     assert splits == [v.split_of(i) for i in ids]  # stable across calls/processes (sha1, not hash())
     assert 70 < splits.count("tune") < 130
     assert v.overlaps((1, 2), (2.5, 3), tol=1.0) and not v.overlaps((1, 2), (3.5, 4), tol=1.0)
+
+
+def test_validation_cache_key_includes_model_and_fps(tmp_path, monkeypatch):
+    # LEARNINGS M21: a clip+fps-only key silently reused lite landmarks for other models.
+    import importlib.util
+    from pathlib import Path as _P
+
+    spec = importlib.util.spec_from_file_location(
+        "validate_real_video", _P(__file__).resolve().parents[1] / "scripts" / "validate_real_video.py")
+    v = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(v)
+    monkeypatch.setenv("BEHAVIORLENS_DATA_DIR", str(tmp_path))
+    clip = tmp_path / "validation" / "ucf101" / "v_PullUps_g01_c01.avi"
+    lite = v.cache_path(clip, "pose_landmarker_lite@aaaaaaaaaaaa", 5.0)
+    keys = {lite,
+            v.cache_path(clip, "pose_landmarker_full@bbbbbbbbbbbb", 5.0),
+            v.cache_path(clip, "pose_landmarker_lite@cccccccccccc", 5.0),  # same name, new weights
+            v.cache_path(clip, "pose_landmarker_lite@aaaaaaaaaaaa", 10.0)}
+    assert len(keys) == 4
+    assert lite == v.cache_path(clip, "pose_landmarker_lite@aaaaaaaaaaaa", 5.0)
+    assert lite.parent == tmp_path / "validation" / "cache"
