@@ -1,0 +1,11 @@
+# Python 3.11 (tested). Linux also needs EGL/GLES system libraries for MediaPipe:
+#   sudo apt-get install -y libegl1 libgles2
+mediapipe>=0.10.14
+opencv-python-headless>=4.9
+imageio-ffmpeg>=0.5
+numpy>=1.26
+pydantic>=2.6
+streamlit>=1.40
+plotly>=5.20
+pandas>=2.1
+pytest>=8.0

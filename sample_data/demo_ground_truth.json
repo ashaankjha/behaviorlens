@@ -1,0 +1,55 @@
+{
+  "description": "Ground truth for the SYNTHETIC demo fixture (scripted, not human-annotated footage).",
+  "events": [
+    {
+      "event_type": "standing_transition",
+      "start_s": 5.0,
+      "end_s": 6.2
+    },
+    {
+      "event_type": "hand_raised",
+      "start_s": 8.0,
+      "end_s": 10.0,
+      "side": "right"
+    },
+    {
+      "event_type": "hand_raised",
+      "start_s": 16.5,
+      "end_s": 18.5,
+      "side": "both"
+    },
+    {
+      "event_type": "standing_transition",
+      "start_s": 20.0,
+      "end_s": 21.2
+    },
+    {
+      "event_type": "hand_raised",
+      "start_s": 26.0,
+      "end_s": 28.0,
+      "side": "right"
+    },
+    {
+      "event_type": "standing_transition",
+      "start_s": 36.0,
+      "end_s": 37.2,
+      "note": "legs hidden: not observable by the rules (expected miss)"
+    },
+    {
+      "event_type": "sustained_standing",
+      "start_s": 6.2,
+      "end_s": 13.5
+    },
+    {
+      "event_type": "sustained_standing",
+      "start_s": 25.0,
+      "end_s": 30.0
+    },
+    {
+      "event_type": "sustained_standing",
+      "start_s": 37.2,
+      "end_s": 40.0,
+      "note": "legs visible again after 37.2 s"
+    }
+  ]
+}

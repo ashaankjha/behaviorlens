@@ -1,0 +1,157 @@
+"""Per-frame geometric features and candidate states derived from pose landmarks.
+
+Candidate states are tri-state: True / False when the relevant landmarks are
+visible, and None ("unobservable") otherwise. Missing evidence never becomes a
+forced classification.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+import numpy as np
+
+from .config import RuleParams
+from .models import (
+    LEFT_ANKLE,
+    LEFT_HIP,
+    LEFT_KNEE,
+    LEFT_SHOULDER,
+    LEFT_WRIST,
+    NOSE,
+    RIGHT_ANKLE,
+    RIGHT_HIP,
+    RIGHT_KNEE,
+    RIGHT_SHOULDER,
+    RIGHT_WRIST,
+    VISIBILITY,
+    X,
+    Y,
+    PoseSequence,
+)
+
+# Tri-state per-frame values: 1 = True, 0 = False, -1 = unobservable.
+TRUE, FALSE, UNKNOWN = 1, 0, -1
+
+
+def _visible(seq: PoseSequence, idx: int, thr: float) -> np.ndarray:
+    vis = seq.landmarks[:, idx, VISIBILITY]
+    return np.nan_to_num(vis, nan=0.0) >= thr
+
+
+def _xy(seq: PoseSequence, idx: int) -> np.ndarray:
+    return seq.landmarks[:, idx, [X, Y]]
+
+
+def _angle_deg(a: np.ndarray, b: np.ndarray, c: np.ndarray) -> np.ndarray:
+    """Angle ABC in degrees for arrays of 2D points."""
+    ba, bc = a - b, c - b
+    denom = np.linalg.norm(ba, axis=1) * np.linalg.norm(bc, axis=1)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        cos = np.sum(ba * bc, axis=1) / denom
+    return np.degrees(np.arccos(np.clip(cos, -1.0, 1.0)))
+
+
+@dataclass
+class HandRaiseFeatures:
+    left: np.ndarray  # tri-state per frame
+    right: np.ndarray
+    # Wrist height above the same-side shoulder in head units (positive = above).
+    left_margin: np.ndarray
+    right_margin: np.ndarray
+
+    @property
+    def combined(self) -> np.ndarray:
+        """Raised if either side is raised; unknown only if neither side is observable."""
+        out = np.full(len(self.left), FALSE)
+        out[(self.left == UNKNOWN) & (self.right == UNKNOWN)] = UNKNOWN
+        out[(self.left == TRUE) | (self.right == TRUE)] = TRUE
+        return out
+
+
+def head_unit(seq: PoseSequence, params: RuleParams) -> np.ndarray:
+    """Vertical nose-to-shoulder-line distance: a body-relative scale that stays
+    available when hips are hidden (e.g. seated at a table). NaN if unobservable."""
+    thr = params.visibility_threshold
+    ok = _visible(seq, NOSE, thr) & _visible(seq, LEFT_SHOULDER, thr) & _visible(seq, RIGHT_SHOULDER, thr)
+    mid_sh_y = (seq.landmarks[:, LEFT_SHOULDER, Y] + seq.landmarks[:, RIGHT_SHOULDER, Y]) / 2
+    unit = mid_sh_y - seq.landmarks[:, NOSE, Y]
+    return np.where(ok & (np.nan_to_num(unit) > 1e-3), unit, np.nan)
+
+
+def hand_raise_features(seq: PoseSequence, params: RuleParams) -> HandRaiseFeatures:
+    thr = params.visibility_threshold
+    unit = head_unit(seq, params)
+    sides = {}
+    for name, sh, wr in (("left", LEFT_SHOULDER, LEFT_WRIST), ("right", RIGHT_SHOULDER, RIGHT_WRIST)):
+        observable = _visible(seq, sh, thr) & _visible(seq, wr, thr) & ~np.isnan(unit)
+        # Image y grows downwards, so a raised wrist has a *smaller* y than the shoulder.
+        with np.errstate(invalid="ignore"):
+            margin = (seq.landmarks[:, sh, Y] - seq.landmarks[:, wr, Y]) / unit
+        state = np.where(margin > params.hand_raise_min_height, TRUE, FALSE)
+        state[~observable] = UNKNOWN
+        sides[name] = (state, np.where(observable, margin, np.nan))
+    return HandRaiseFeatures(
+        left=sides["left"][0],
+        right=sides["right"][0],
+        left_margin=sides["left"][1],
+        right_margin=sides["right"][1],
+    )
+
+
+# Posture states for standing_transition.
+SEATED, STANDING, AMBIGUOUS = 1, 2, 0
+
+
+@dataclass
+class PostureFeatures:
+    state: np.ndarray  # SEATED / STANDING / AMBIGUOUS / UNKNOWN per frame
+    hip_knee_drop: np.ndarray  # (knee_y - hip_y) / torso_length
+    torso_tilt_deg: np.ndarray
+    knee_angle_deg: np.ndarray  # NaN when ankles are not visible
+
+
+def posture_features(seq: PoseSequence, params: RuleParams) -> PostureFeatures:
+    """Classify each frame as seated-like, standing-like, ambiguous or unobservable.
+
+    Uses each leg's vertical hip-to-knee drop normalised by torso length, which is small
+    when seated (thighs roughly horizontal or pointing at the camera) and large
+    when standing (thighs roughly vertical). Requires both shoulders, hips and
+    knees to be visible; upper-body visibility alone never implies sitting.
+    """
+    thr = params.visibility_threshold
+    required = [LEFT_SHOULDER, RIGHT_SHOULDER, LEFT_HIP, RIGHT_HIP, LEFT_KNEE, RIGHT_KNEE]
+    observable = np.all([_visible(seq, i, thr) for i in required], axis=0)
+
+    mid_sh = (_xy(seq, LEFT_SHOULDER) + _xy(seq, RIGHT_SHOULDER)) / 2
+    mid_hip = (_xy(seq, LEFT_HIP) + _xy(seq, RIGHT_HIP)) / 2
+    torso = mid_hip - mid_sh
+    torso_len = np.linalg.norm(torso, axis=1)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        # Per-leg drops: both thighs must agree, so a lunge is neither seated nor standing.
+        drop_l = (seq.landmarks[:, LEFT_KNEE, Y] - seq.landmarks[:, LEFT_HIP, Y]) / torso_len
+        drop_r = (seq.landmarks[:, RIGHT_KNEE, Y] - seq.landmarks[:, RIGHT_HIP, Y]) / torso_len
+        drop = (drop_l + drop_r) / 2
+        tilt = np.degrees(np.arctan2(np.abs(torso[:, 0]), torso[:, 1]))
+    observable &= np.nan_to_num(torso_len) > 1e-3
+
+    ankles_visible = _visible(seq, LEFT_ANKLE, thr) & _visible(seq, RIGHT_ANKLE, thr)
+    knee_l = _angle_deg(_xy(seq, LEFT_HIP), _xy(seq, LEFT_KNEE), _xy(seq, LEFT_ANKLE))
+    knee_r = _angle_deg(_xy(seq, RIGHT_HIP), _xy(seq, RIGHT_KNEE), _xy(seq, RIGHT_ANKLE))
+    knee = np.where(ankles_visible, np.minimum(knee_l, knee_r), np.nan)
+
+    upright = tilt <= params.max_torso_tilt_deg
+    legs_straight = np.isnan(knee) | (knee >= params.standing_min_knee_angle_deg)
+    seated = observable & (np.fmax(drop_l, drop_r) <= params.seated_max_drop)
+    standing = observable & upright & (np.fmin(drop_l, drop_r) >= params.standing_min_drop) & legs_straight
+
+    state = np.full(len(seq), AMBIGUOUS)
+    state[seated] = SEATED
+    state[standing] = STANDING
+    state[~observable] = UNKNOWN
+    return PostureFeatures(
+        state=state,
+        hip_knee_drop=np.where(observable, drop, np.nan),
+        torso_tilt_deg=np.where(observable, tilt, np.nan),
+        knee_angle_deg=knee,
+    )

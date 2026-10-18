@@ -1,0 +1,15 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+build/
+dist/
+
+# Local processing data: uploads, database, derived artifacts. Never commit.
+data/
+# Downloaded model weights (fetch with scripts/download_model.py)
+assets/models/*.task
+assets/models/*.part
+
+.DS_Store
