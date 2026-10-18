@@ -4,7 +4,7 @@
 
 BehaviorLens is a local-first, computer-vision-assisted review tool for videos of **staged** behavioral sessions. It runs MediaPipe pose estimation on an uploaded video and applies interpretable temporal rules to suggest **candidate observable movement events** (`hand_raised`, `standing_transition`, `sustained_standing`) on a timeline. A human reviewer then confirms, rejects, edits or adds events and exports the reviewed records as CSV/JSON.
 
-Everything runs on your machine. Videos are never uploaded anywhere, and the app makes no telemetry or LLM calls. The only network access is the one-time download of the pose model.
+Everything runs on your machine. Videos are never uploaded anywhere, and the app makes no telemetry or LLM calls. The app listens on `localhost` only (`.streamlit/config.toml`), so other machines on your network can't reach it, and startup makes no outbound requests. The only network access is the one-time download of the pose model, plus the optional real-video validation scripts that fetch research clips.
 
 The full specification is in [`docs/PRD.md`](docs/PRD.md).
 
@@ -27,7 +27,7 @@ Tested with **Python 3.11** on Linux.
 git clone https://github.com/ashaankjha/behaviorlens.git
 cd behaviorlens
 python3.11 -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
+pip install -r requirements.txt -c constraints.txt   # exact tested versions; add -r requirements-dev.txt for ruff/playwright
 
 # Linux only: MediaPipe needs EGL/GLES system libraries
 sudo apt-get install -y libegl1 libgles2
@@ -141,6 +141,7 @@ Design notes:
 
 ## Privacy and limitations
 
+- The server binds to `localhost`. To deliberately expose it on a trusted network, run `streamlit run app.py --server.address 0.0.0.0`. Uploaded videos and reviews then become reachable by anyone who can reach that address.
 - Processing is local. Streamlit usage statistics are disabled in `.streamlit/config.toml`. Logs never contain frames or identifying information.
 - Uploads and derived files live under the gitignored `data/sessions/<session_id>/`. **Delete session** removes the database rows, review history, stored video, landmarks and overlay, plus the pose cache unless another session uses the same video. Backups made outside the app are outside its control.
 - Exports never include video, file paths, source filenames (which may contain names) or images. They carry a "not clinically validated" warning and a `data_mode` (`synthetic` or `video_inference`).

@@ -15,11 +15,11 @@ Status key: ✅ implemented and verified · 🟡 implemented with a documented l
 | FR2 | MediaPipe Pose Landmarker VIDEO mode, local model, OpenCV decode | ✅ | `pose.MediaPipePoseEstimator`, `video_io.iter_sampled_frames` | `test_real_inference_standing_person` |
 | FR2 | 5 fps default (10 optional), timestamps from frame index and source FPS | ✅ | `sample_frame_indices`, UI sampling-rate radio | `test_sample_frame_indices_use_source_fps`, monotonic check in `test_video_pipeline_with_fake_estimator_and_cache` |
 | FR2 | Store landmarks with visibility/presence; `no_pose` frames | ✅ | `PoseSequence` (N, 33, 5), NaN rows, `.npz` per analysis | `test_real_inference_without_person_yields_no_pose` |
-| FR2 | One primary person; warn on multiple | ✅ | `num_poses=2`, largest bounding box, `analyze_pose` warning | rule tests set `num_people`; warning text in `analyze_pose` |
+| FR2 | One primary person; warn on multiple | ✅ | `num_poses=2`, `pose.select_primary` (largest bounding box), `analyze_pose` warning | `test_multi_person_frames_raise_a_warning`, `test_primary_person_is_the_largest_pose` (added after AUDIT D2) |
 | FR2 | Progress, no crash on decode/model failure | ✅ | `st.progress` callback, `run_analysis` sets `failed` + error | `test_missing_model_is_actionable` |
 | FR2 | Cache by checksum + model version + settings | ✅ | `_pose_cache_path` | cache-hit assertion in `test_video_pipeline_with_fake_estimator_and_cache` |
 | FR2 | Toggled pose-overlay preview | ✅ | `pipeline.render_overlay`, overlay toggle | `test_real_inference_standing_person` |
-| FR3 | `standing_transition` with dwell and visibility gating; unobservable when legs hidden | 🟡 | `features.posture_features` (rules-v0.2: hip/knee angles plus drop, in-frame gating), `event_rules.detect_standing` | synthetic: `test_standing_transition_basic`, `test_upper_body_only_never_infers_sitting`, `test_transition_while_legs_hidden_is_not_guessed`, `test_lunge_is_neither_seated_nor_standing`, `test_angled_seated_pose_is_seated_via_hip_angle`. **Real video:** Charades held-out recall 0.40 and precision 0.40, against 0.20/0.50 for v0.1 ([VALIDATION.md](VALIDATION.md)). Works end to end on real footage; accuracy is modest and limited by leg visibility. `pose_landmarker_full`/`heavy` don't improve it with v0.2 thresholds (heavy 0/19); lite stays the default (VALIDATION *Pose model comparison*). |
+| FR3 | `standing_transition` with dwell and visibility gating; unobservable when legs hidden | 🟡 | `features.posture_features` (rules-v0.2: hip/knee angles plus drop, in-frame gating), `event_rules.detect_standing` | synthetic: `test_standing_transition_basic`, `test_upper_body_only_never_infers_sitting`, `test_transition_while_legs_hidden_is_not_guessed`, `test_lunge_is_neither_seated_nor_standing`, `test_angled_seated_pose_is_seated_via_hip_angle`; unobservable state asserted in `test_upper_body_only_never_infers_sitting` and `test_out_of_frame_landmarks_are_unobservable`. **Real video:** Charades held-out recall 0.40 and precision 0.40, against 0.20/0.50 for v0.1 ([VALIDATION.md](VALIDATION.md)). Works end to end on real footage; accuracy is modest and limited by leg visibility. `pose_landmarker_full`/`heavy` don't improve it with v0.2 thresholds (heavy 0/19); lite stays the default (VALIDATION *Pose model comparison*). |
 | FR3 | `hand_raised`: wrist above same-side shoulder ≥0.6 s, confidence-gated, both hands = one event | ✅ | `features.hand_raise_features`, `event_rules.detect_hand_raised` | 13 synthetic tests in `test_event_rules.py`. **Real video:** UCF101 PullUps 7/8 clips detected, JumpRope 0/8; reviewed disagreements in [VALIDATION.md](VALIDATION.md) |
 | FR3 | Optional `sustained_standing` ≥2 s | ✅ | `detect_standing` | `test_sustained_standing_optional` |
 | FR3 | Smoothing/debounce → segments → merged intervals; edge-case tests | ✅ | `find_segments` gap bridging + minimum durations | occlusion, noise, spike, missing-pose tests |
@@ -32,7 +32,7 @@ Status key: ✅ implemented and verified · 🟡 implemented with a documented l
 | FR5 | SQLite sessions, landmarks, events, review history | ✅ | `storage.py` | `test_review_actions_persist_across_restart` |
 | FR5 | Stable IDs, statuses, provenance, timestamps | ✅ | `Event` model | `test_original_proposal_kept_after_second_edit` |
 | FR5 | Preserve the original proposal for edited events | ✅ | `original_proposal` + `review_history` | same |
-| FR5 | Rerun replaces only unreviewed suggestions, after confirmation | ✅ | `save_suggestions`, UI confirmation checkbox | `test_rerun_replaces_only_pending_suggestions` |
+| FR5 | Rerun replaces only unreviewed suggestions, after confirmation | ✅ | `save_suggestions`, UI confirmation checkbox | `test_rerun_replaces_only_pending_suggestions` (storage), `test_rerun_requires_explicit_confirmation` (UI gate, AppTest) |
 | FR6 | CSV minimum fields | ✅ | `export.CSV_FIELDS` | `test_csv_fields_and_statuses` |
 | FR6 | JSON with metadata, settings, events, warning | ✅ | `export.to_json_dict` | `test_json_structure` |
 | FR6 | No video, paths, identities or crops | ✅ | export omits filename and paths | `test_exports_contain_no_paths_filenames_or_video` |
@@ -40,7 +40,7 @@ Status key: ✅ implemented and verified · 🟡 implemented with a documented l
 | FR7 | Before/after thumbnails | ✅ | `pipeline.event_thumbnails` | `test_event_thumbnails_are_local_and_deleted_with_session` |
 | FR7 | Overlay video | ✅ | `render_overlay` | see FR2 |
 | FR7 | Counts and durations, proposed vs confirmed | ✅ | `summary_counts` | browser run |
-| FR7 | Precision/recall/F1 only when ground truth exists | ✅ | `metrics.match_events`, ground-truth CSV upload | `test_demo_session_end_to_end` |
+| FR7 | Precision/recall/F1 only when ground truth exists | ✅ | `metrics.match_events`, `metrics.parse_ground_truth_csv`, ground-truth CSV upload | `test_ground_truth_metrics_only_when_ground_truth_exists` (UI gating), `tests/test_metrics.py` (CSV validation, tolerance, one-to-one matching), `test_demo_session_end_to_end` |
 
 ## Sections 7–9: data, UX, privacy
 
@@ -49,7 +49,7 @@ Status key: ✅ implemented and verified · 🟡 implemented with a documented l
 | Synthetic fixture clearly separated from real inference | ✅ | `data_mode` on sessions, events and exports; 🧪 banner; `demo_generator` docstring |
 | Exact disclaimer banner and neutral vocabulary | ✅ | `config.DISCLAIMER`; "Candidate observations", "Review status" |
 | States ready → processing → review-ready → reviewed/exported | ✅ | `status_stepper`, `refresh_review_status`, `mark_exported` (`test_export_status_only_after_full_review`) |
-| Local processing; telemetry off; no frames in logs | ✅ | `.streamlit/config.toml`, no frame logging |
+| Local processing; telemetry off; no remote endpoints; no frames in logs | ✅ | `.streamlit/config.toml` (`gatherUsageStats = false`, `address = "localhost"`, so no 0.0.0.0 bind and no checkip.amazonaws.com call); no frame logging | `test_server_binds_localhost_only`; verified loopback-only listen and refused LAN connection (AUDIT D1) |
 | Delete session removes DB rows and derived files | ✅ | `Store.delete_session` (`test_delete_session_removes_records_and_files`) |
 | Missing evidence → unknown/no event | ✅ | tri-state features |
 | No emotion, intent, stereotypy, aggression or treatment features | ⛔ | not implemented by design |
@@ -79,3 +79,7 @@ The PRD asks for detection on staged footage of consenting adults. Charades (cro
 - Stand-up detection is modest on real home video (held-out recall 0.40, precision 0.40). Most misses happen when legs are hidden. The remaining false positives come from camera pans, partial-body framing and a second person.
 - Samples are small (10 held-out stand-ups), so the improvement over v0.1 isn't statistically conclusive.
 - Validation footage isn't from ABA settings. The README "own staged clip" procedure covers the intended camera setup.
+
+## Independent audit
+
+A clean-room audit by a separate session (`docs/AUDIT.md`, 2026-10-18) reproduced the README setup, the tests, the e2e check and every number in `VALIDATION.md`. All of its discrepancies have been resolved; see the *Resolution* section of `AUDIT.md`.

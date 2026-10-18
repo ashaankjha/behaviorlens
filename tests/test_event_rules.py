@@ -219,3 +219,24 @@ def test_posture_gap_bridging_is_independent_of_hand_gap():
     wide_posture = RuleParams(posture_merge_gap_s=1.5)
     # widening posture bridging must not merge two brief hand flicks into one >=0.6 s raise
     assert detect_hand_raised(seq, wide_posture, "s") == []
+
+
+# ------------------------------------------------------------ multi-person (AUDIT D2)
+def test_multi_person_frames_raise_a_warning():
+    from behaviorlens.pipeline import analyze_pose
+
+    single = analyze_pose(make_seq(4), P, "s")
+    multi = analyze_pose(make_seq(4, people=2), P, "s")
+    assert not any("More than one person" in w for w in single.warnings)
+    assert any("More than one person" in w and "not reliable" in w for w in multi.warnings)
+    assert multi.stats["multi_person_frame_ratio"] == 1.0
+
+
+def test_primary_person_is_the_largest_pose():
+    from behaviorlens.pose import select_primary
+
+    big = make_seq(1).landmarks[0]
+    small = big.copy()
+    small[:, :2] = 0.8 + (small[:, :2] - 0.5) * 0.2  # a distant second person in the corner
+    assert select_primary([small, big]) is big
+    assert select_primary([big, small]) is big

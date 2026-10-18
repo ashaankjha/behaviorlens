@@ -23,7 +23,7 @@ command -v "$PY" >/dev/null || PY=python3
 if [ ! -x .venv/bin/python ]; then
   "$PY" -m venv .venv
 fi
-.venv/bin/pip install -q --disable-pip-version-check -r requirements.txt ruff playwright
+.venv/bin/pip install -q --disable-pip-version-check -r requirements-dev.txt -c constraints.txt
 
 # Pose model: best effort (tests that need it skip when it is missing).
 .venv/bin/python scripts/download_model.py >/dev/null 2>&1 \

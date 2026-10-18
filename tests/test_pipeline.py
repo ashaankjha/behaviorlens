@@ -272,3 +272,18 @@ def test_validation_cache_key_includes_model_and_fps(tmp_path, monkeypatch):
     assert len(keys) == 4
     assert lite == v.cache_path(clip, "pose_landmarker_lite@aaaaaaaaaaaa", 5.0)
     assert lite.parent == tmp_path / "validation" / "cache"
+
+
+def test_validation_params_reject_typos():
+    """AUDIT D5: RuleParams.from_dict drops unknown keys, so the script must reject them."""
+    import importlib.util
+    from pathlib import Path as _P
+
+    spec = importlib.util.spec_from_file_location(
+        "validate_real_video", _P(__file__).resolve().parents[1] / "scripts" / "validate_real_video.py")
+    v = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(v)
+    params, overrides = v.parse_params('{"dwell_s": 1.0}')
+    assert params.dwell_s == 1.0 and overrides == {"dwell_s": 1.0}
+    with pytest.raises(SystemExit, match="unknown --params keys: dwel_s"):
+        v.parse_params('{"dwel_s": 1.0}')

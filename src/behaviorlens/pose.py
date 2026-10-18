@@ -97,8 +97,7 @@ class MediaPipePoseEstimator:
         if not poses:
             return None, 0
         arrays = [_to_array(p) for p in poses]
-        primary = max(arrays, key=_bbox_area)
-        return primary, len(arrays)
+        return select_primary(arrays), len(arrays)
 
     def close(self) -> None:
         self._landmarker.close()
@@ -117,6 +116,11 @@ def _to_array(landmarks) -> np.ndarray:
                   lm.visibility if lm.visibility is not None else np.nan,
                   lm.presence if lm.presence is not None else np.nan)
     return out
+
+
+def select_primary(arrays: list[np.ndarray]) -> np.ndarray:
+    """The person whose visible landmarks span the largest bounding box (usually the nearest)."""
+    return max(arrays, key=_bbox_area)
 
 
 def _bbox_area(arr: np.ndarray) -> float:

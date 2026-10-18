@@ -4,6 +4,9 @@ gatherUsageStats = false
 [server]
 maxUploadSize = 100
 headless = true
+# Bind to loopback only. Without this, Streamlit listens on 0.0.0.0 (exposing uploaded
+# videos to the LAN) and calls checkip.amazonaws.com on every start (docs/AUDIT.md D1).
+address = "localhost"
 
 [theme]
 base = "dark"

@@ -63,6 +63,8 @@ Last updated: 2026-10-18
 | M21 | `validate_real_video.py` cached landmarks under `<clip>_<fps>fps.npz`, with no model in the key | Switching `BEHAVIORLENS_MODEL_PATH` to full/heavy would have scored **lite's** landmarks and reported "no difference" | Every cache key must include everything that changes the cached value: the model version (name + weight hash) and fps (`cache_path`, test `test_validation_cache_key_includes_model_and_fps`). Sanity-check a new run by reproducing a known baseline exactly (the lite rows matched v0.2 to the count). |
 | M22 | I expected the larger pose models to help leg visibility, so stand-up recall would rise | Heavy found 0/19 stand-ups (lite 5/19); full 3/19 | Thresholds are coupled to the model that selected them, **including `visibility_threshold`**: heavy is more conservative about occluded legs, so the same 0.5 gate drops most posture frames. A model swap is a threshold change and needs the full tune/holdout protocol. Even at matched observability (diagnostic only), heavy didn't beat lite. |
 | M23 | Skill commands used `SCR="$SCRATCHPAD/e2e"`, assuming the variable was set | In a cloud shell `$SCRATCHPAD` was empty, so the next line would have run `rm -rf /e2e` | Never let a path in an `rm -rf` depend on an env var that may be unset. Use `${SCRATCHPAD:?…}` so the command fails loudly. Fixed in the `e2e-verify-streamlit` and `extract-chatgpt-share` skills. |
+| M24 | I wrote "the only network access is the model download" from my own code, without checking the framework | The audit found Streamlit binding `0.0.0.0` and calling `checkip.amazonaws.com` on every start (AUDIT D1) | Privacy and network claims must be **observed**: watch the startup log and listening sockets (`/proc/net/tcp` when `ss` is missing), and try a non-loopback connection. Pin the framework behaviour in config (`server.address = "localhost"`) and in a test. |
+| M25 | Traceability rows were marked ✅ when the cited test didn't assert the claim (multi-person warning, UI gates, CSV parser) | The clean-room audit downgraded them (AUDIT D2) | A ✅ row must name a test whose assertions cover the claim's exact wording. An independent auditor session is cheap and catches overclaiming that the author can't see. |
 
 ## 4. Design decisions (and why)
 
@@ -78,6 +80,7 @@ Last updated: 2026-10-18
 - **Before/after thumbnails** are taken 0.5 s outside the event interval (clamped to the video), cached as JPEGs keyed by timestamp so edits regenerate them, and shown only in the UI.
 - **Thumbnails and overlays** live under `data/sessions/<id>/` so Delete session removes them, and they're never exported.
 
+- **Independent audit plus parallel experiment paid off:** the audit predicted the validation-cache bug (D3) that the experiment session independently hit and fixed (M21). Both children stayed on-brief with standalone prompts. Merge conflicts only happened in `docs/LEARNINGS.md` (concurrent M-numbers), resolved by renumbering at merge.
 - **Parallel work goes to child cloud sessions on separate branches** and is merged by the parent after review. First use: a clean-room README audit (`audit/clean-room-readme`) and a pose-model comparison (`experiment/pose-model-comparison`).
 
 ## 5. Verification recipes that worked

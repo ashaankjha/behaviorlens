@@ -117,3 +117,15 @@ Both were corrected (README line 38; `e2e-verify-streamlit` and `extract-chatgpt
 - Delete-session file cleanup beyond reading that `test_delete_session_removes_records_and_files` exists and passes.
 
 No validation clips, frames, model weights or `data/` contents are committed. `data/validation/` is gitignored, and audit screenshots stayed in the session scratch directory.
+
+## Resolution (parent session, 2026-10-18)
+
+| # | Resolution | Verified by |
+|---|---|---|
+| D1 | `.streamlit/config.toml` sets `address = "localhost"`. The README privacy text now describes loopback-only binding and how to opt into LAN access deliberately. | `test_server_binds_localhost_only`; a live start logged `Uvicorn server started on localhost` with no External URL; `/proc/net/tcp` showed `LISTEN 127.0.0.1`; a connection to the container's non-loopback IP was refused. |
+| D2 | Added tests for the multi-person warning, primary-person selection (extracted `pose.select_primary`), the UI re-run confirmation gate, ground-truth gating in the UI, and `parse_ground_truth_csv`/`match_events` edge cases (`tests/test_metrics.py`). The traceability rows cite them. | The new tests pass. |
+| D3 | Fixed independently by the pose-model-comparison session: the cache key includes the model version and fps (`cache_path`). | `test_validation_cache_key_includes_model_and_fps`; the lite rows reproduce v0.2 exactly. |
+| D4 | `constraints.txt` (exact tested versions) and `requirements-dev.txt` (adds `ruff` and `playwright`). The README, CLAUDE.md and the SessionStart hook install with `-c constraints.txt`. | Cold-start hook run from a clean copy (see LEARNINGS §5). |
+| D5 | `--params` rejects unknown keys (`parse_params`), and overridden runs record `params_override` in the JSON. VALIDATION.md has a footnote on how the v0.1 rows were produced. | `test_validation_params_reject_typos`. |
+| D6 | Merged as written (README headless note; `${SCRATCHPAD:?}` guards; lesson renumbered **M23** at merge). | — |
+| D7 | Documentation only; no change. | — |

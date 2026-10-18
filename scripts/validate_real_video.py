@@ -89,6 +89,16 @@ def ensure_poses(paths: list[Path], workers: int, model_file: Path, fps: float) 
     return poses, cost
 
 
+def parse_params(text: str) -> tuple[RuleParams, dict]:
+    """RuleParams from JSON overrides. Unknown keys are an error, so a typo can't silently
+    score the defaults (AUDIT D5)."""
+    overrides = json.loads(text)
+    unknown = set(overrides) - set(RuleParams().to_dict())
+    if unknown:
+        raise SystemExit(f"unknown --params keys: {', '.join(sorted(unknown))}")
+    return RuleParams.from_dict({**RuleParams().to_dict(), **overrides}), overrides
+
+
 def overlaps(a: tuple[float, float], b: tuple[float, float], tol: float = 0.0) -> bool:
     return a[0] < b[1] + tol and b[0] - tol < a[1]
 
@@ -176,7 +186,7 @@ def main() -> None:
     ap.add_argument("--fps", type=float, default=config.DEFAULT_SAMPLE_FPS, help="pose sampling rate")
     ap.add_argument("--json", help="write full results JSON here")
     a = ap.parse_args()
-    params = RuleParams.from_dict({**RuleParams().to_dict(), **json.loads(a.params)})
+    params, overrides = parse_params(a.params)
     paths = sorted((vdir() / "charades" / "videos").glob("*.mp4")) + sorted((vdir() / "ucf101").glob("*.avi"))
     if not paths:
         sys.exit("no clips: run scripts/fetch_validation_clips.py first")
@@ -191,6 +201,8 @@ def main() -> None:
         "sample_fps": a.fps,
         "pose_extraction": {**cost, "sampled_frames_all_clips": frames},
         "params": params.to_dict(),
+        # Overridden runs are NOT the shipped rules version (AUDIT D5); label them as such.
+        "params_override": overrides or None,
         "split": a.split,
         "tolerance_s": a.tol,
         "charades_standing_transition": eval_charades(params, poses, a.split, a.tol),

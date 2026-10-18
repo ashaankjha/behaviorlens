@@ -9,7 +9,7 @@ Local-first Streamlit and MediaPipe tool that suggests observable movement event
 ## Commands
 
 ```bash
-python3.11 -m venv .venv && .venv/bin/pip install -r requirements.txt   # Python 3.11
+python3.11 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt -c constraints.txt   # Python 3.11, pinned
 sudo apt-get install -y libegl1 libgles2       # Linux: MediaPipe needs EGL even on CPU
 .venv/bin/python scripts/download_model.py      # pose model -> assets/models/ (gitignored)
 .venv/bin/python -m pytest -q                   # full suite, ~5 s
