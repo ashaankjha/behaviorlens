@@ -5,7 +5,11 @@ data/validation/cache/, so re-running with different rule parameters is fast.
 
 Usage:
     python scripts/validate_real_video.py [--params '{"dwell_s": 0.8}'] [--split all|tune|holdout]
-                                          [--report docs/VALIDATION.md] [--json out.json]
+                                          [--fps 5] [--json out.json]
+
+The pose model is config.model_path() (override with BEHAVIORLENS_MODEL_PATH). The landmark
+cache is keyed by clip, model version (name + content hash) and fps, so switching models or
+sampling rates never silently reuses another model's landmarks (LEARNINGS M21).
 
 Metrics:
 * Charades standing_transition (event level). A detection is correct if it overlaps a
@@ -21,9 +25,11 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import resource
 import sys
 import time
 from concurrent.futures import ProcessPoolExecutor
+from functools import partial
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -36,7 +42,6 @@ from behaviorlens.pose import MediaPipePoseEstimator, model_version  # noqa: E40
 from behaviorlens.video_io import VideoValidationError, probe_video  # noqa: E402
 
 STAND_UP, SIT_DOWN = 154, 151
-FPS = 5.0
 
 
 def vdir() -> Path:
@@ -48,25 +53,40 @@ def split_of(clip_id: str) -> str:
     return "tune" if int(hashlib.sha1(clip_id.encode()).hexdigest(), 16) % 2 == 0 else "holdout"
 
 
-def pose_for(path_str: str) -> tuple[str, str | None]:
+def cache_path(clip: Path, model_ver: str, fps: float) -> Path:
+    """Landmark cache file for one clip. Model version and fps are part of the key."""
+    safe_model = model_ver.replace("@", "-")
+    return vdir() / "cache" / f"{clip.parent.name}_{clip.stem}_{safe_model}_{fps:g}fps.npz"
+
+
+def pose_for(path_str: str, model_file: str, model_ver: str, fps: float) -> tuple[str, str]:
     path = Path(path_str)
-    cache = vdir() / "cache" / f"{path.parent.name}_{path.stem}_{FPS:g}fps.npz"
+    cache = cache_path(path, model_ver, fps)
     if cache.is_file():
         return path_str, str(cache)
     cache.parent.mkdir(parents=True, exist_ok=True)
     try:
         meta = probe_video(path)
-        with MediaPipePoseEstimator() as est:
-            seq, _ = extract_pose(path, meta, est, FPS)
+        with MediaPipePoseEstimator(Path(model_file)) as est:
+            seq, _ = extract_pose(path, meta, est, fps)
         seq.save_npz(cache)
         return path_str, str(cache)
     except VideoValidationError as exc:
         return path_str, f"ERROR: {exc}"
 
 
-def ensure_poses(paths: list[Path], workers: int) -> dict[str, str]:
+def ensure_poses(paths: list[Path], workers: int, model_file: Path, fps: float) -> tuple[dict[str, str], dict]:
+    """Compute missing landmark caches. Returns the cache map and the extraction cost."""
+    model_ver = model_version(model_file)
+    todo = sum(not cache_path(p, model_ver, fps).is_file() for p in paths)
+    t0, cpu0 = time.time(), resource.getrusage(resource.RUSAGE_CHILDREN)
+    job = partial(pose_for, model_file=str(model_file), model_ver=model_ver, fps=fps)
     with ProcessPoolExecutor(max_workers=workers) as ex:
-        return dict(ex.map(pose_for, [str(p) for p in paths]))
+        poses = dict(ex.map(job, [str(p) for p in paths]))
+    cpu1 = resource.getrusage(resource.RUSAGE_CHILDREN)
+    cost = {"clips_computed": todo, "workers": workers, "wall_s": round(time.time() - t0, 1),
+            "cpu_s": round((cpu1.ru_utime - cpu0.ru_utime) + (cpu1.ru_stime - cpu0.ru_stime), 1)}
+    return poses, cost
 
 
 def overlaps(a: tuple[float, float], b: tuple[float, float], tol: float = 0.0) -> bool:
@@ -153,6 +173,7 @@ def main() -> None:
     ap.add_argument("--split", default="all", choices=["all", "tune", "holdout"])
     ap.add_argument("--tol", type=float, default=1.0)
     ap.add_argument("--workers", type=int, default=4)
+    ap.add_argument("--fps", type=float, default=config.DEFAULT_SAMPLE_FPS, help="pose sampling rate")
     ap.add_argument("--json", help="write full results JSON here")
     a = ap.parse_args()
     params = RuleParams.from_dict({**RuleParams().to_dict(), **json.loads(a.params)})
@@ -160,12 +181,15 @@ def main() -> None:
     if not paths:
         sys.exit("no clips: run scripts/fetch_validation_clips.py first")
     t0 = time.time()
-    poses = ensure_poses(paths, a.workers)
+    model_file = config.model_path()
+    poses, cost = ensure_poses(paths, a.workers, model_file, a.fps)
     errors = {Path(k).name: v for k, v in poses.items() if v.startswith("ERROR")}
+    frames = sum(len(PoseSequence.load_npz(v).timestamps_s) for v in poses.values() if not v.startswith("ERROR"))
     result = {
-        "model_version": model_version(config.model_path()),
+        "model_version": model_version(model_file),
         "algorithm_version": config.ALGORITHM_VERSION,
-        "sample_fps": FPS,
+        "sample_fps": a.fps,
+        "pose_extraction": {**cost, "sampled_frames_all_clips": frames},
         "params": params.to_dict(),
         "split": a.split,
         "tolerance_s": a.tol,
