@@ -107,7 +107,7 @@ def detect_hand_raised(seq: PoseSequence, params: RuleParams, session_id: str) -
 
 
 def _stable_runs(state: np.ndarray, value: int, seq: PoseSequence, params: RuleParams) -> list[Segment]:
-    runs = find_segments(state == value, seq.timestamps_s, params.merge_gap_s)
+    runs = find_segments(state == value, seq.timestamps_s, params.posture_merge_gap_s)
     return [
         r for r in runs
         if segment_bounds(r, seq)[1] - segment_bounds(r, seq)[0] >= params.dwell_s - 1e-9
@@ -152,11 +152,17 @@ def detect_standing(seq: PoseSequence, params: RuleParams, session_id: str) -> l
             "unobservable_frames_in_transition": int(np.sum(between == UNKNOWN)),
             "median_hip_knee_drop_before": _nanmedian(feats.hip_knee_drop[a.first: a.last + 1]),
             "median_hip_knee_drop_after": _nanmedian(feats.hip_knee_drop[first_up: b.last + 1]),
+            "median_hip_angle_before_deg": _nanmedian(feats.hip_angle_deg[a.first: a.last + 1]),
+            "median_hip_angle_after_deg": _nanmedian(feats.hip_angle_deg[first_up: b.last + 1]),
             "params": {
                 "visibility_threshold": params.visibility_threshold,
                 "seated_max_drop": params.seated_max_drop,
+                "seated_max_hip_angle_deg": params.seated_max_hip_angle_deg,
+                "seated_max_knee_angle_deg": params.seated_max_knee_angle_deg,
                 "standing_min_drop": params.standing_min_drop,
+                "standing_min_hip_angle_deg": params.standing_min_hip_angle_deg,
                 "dwell_s": params.dwell_s,
+                "posture_merge_gap_s": params.posture_merge_gap_s,
                 "max_transition_s": params.max_transition_s,
             },
         }

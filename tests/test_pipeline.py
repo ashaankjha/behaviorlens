@@ -236,3 +236,18 @@ def test_event_thumbnails_are_local_and_deleted_with_session(store):
     assert pipeline.event_thumbnails(store, sid, 0.1, 39.9)[0][0] == 0.0
     store.delete_session(sid)
     assert not any(p.exists() for _, p in thumbs)
+
+
+def test_validation_harness_helpers_are_deterministic():
+    import importlib.util
+    from pathlib import Path as _P
+
+    spec = importlib.util.spec_from_file_location(
+        "validate_real_video", _P(__file__).resolve().parents[1] / "scripts" / "validate_real_video.py")
+    v = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(v)
+    ids = [f"clip{i}" for i in range(200)]
+    splits = [v.split_of(i) for i in ids]
+    assert splits == [v.split_of(i) for i in ids]  # stable across calls/processes (sha1, not hash())
+    assert 70 < splits.count("tune") < 130
+    assert v.overlaps((1, 2), (2.5, 3), tol=1.0) and not v.overlaps((1, 2), (3.5, 4), tol=1.0)

@@ -13,7 +13,7 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
-ALGORITHM_VERSION = "rules-v0.1"
+ALGORITHM_VERSION = "rules-v0.2"
 
 # MediaPipe Pose Landmarker model (downloaded by scripts/download_model.py).
 MODEL_NAME = "pose_landmarker_lite"
@@ -82,17 +82,26 @@ class RuleParams:
     hand_raise_min_s: float = 0.6
     # Gaps (missing/negative frames) up to this long are bridged inside a segment.
     merge_gap_s: float = 0.4
-    # standing_transition: (knee_y - hip_y) / torso_length thresholds.
-    seated_max_drop: float = 0.35
-    standing_min_drop: float = 0.6
+    # Posture cues (rules-v0.2; thresholds chosen on the Charades tuning split, see
+    # docs/VALIDATION.md). Drops are per-leg (knee_y - hip_y) / torso_length; angles in degrees.
+    seated_max_drop: float = 0.35  # frontal-view cue: thighs foreshortened/horizontal
+    seated_max_hip_angle_deg: float = 140.0  # shoulder-hip-knee: hips flexed
+    seated_max_knee_angle_deg: float = 130.0  # hip-knee-ankle, when ankles are visible
+    seated_drop_ceiling: float = 0.5  # no leg may hang straight down when seated
+    standing_min_drop: float = 0.3
+    standing_min_hip_angle_deg: float = 150.0
     # Torso must be within this many degrees of vertical to count as upright.
     max_torso_tilt_deg: float = 35.0
     # If ankles are visible, the knee must be at least this straight when standing.
     standing_min_knee_angle_deg: float = 140.0
+    # Gap bridging for posture runs (separate from merge_gap_s so wider bridging here cannot
+    # merge brief hand flicks into a sustained raise).
+    posture_merge_gap_s: float = 0.4
     # Seated and standing states must each be held this long around a transition.
-    dwell_s: float = 1.0
+    # (rules-v0.2: 0.8 s / 5 s chosen on the Charades tuning split; v0.1 used 1.0 s / 3 s.)
+    dwell_s: float = 0.8
     # Maximum time between the last seated frame and the first standing frame.
-    max_transition_s: float = 3.0
+    max_transition_s: float = 5.0
     sustained_standing_min_s: float = 2.0
     enable_sustained_standing: bool = True
 

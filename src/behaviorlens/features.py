@@ -34,9 +34,18 @@ from .models import (
 TRUE, FALSE, UNKNOWN = 1, 0, -1
 
 
+# Landmarks this far outside the image are extrapolated, not observed (LEARNINGS M16).
+IN_FRAME_TOLERANCE = 0.01
+
+
 def _visible(seq: PoseSequence, idx: int, thr: float) -> np.ndarray:
-    vis = seq.landmarks[:, idx, VISIBILITY]
-    return np.nan_to_num(vis, nan=0.0) >= thr
+    """Confidently detected AND inside the image."""
+    vis = np.nan_to_num(seq.landmarks[:, idx, VISIBILITY], nan=0.0) >= thr
+    x, y = seq.landmarks[:, idx, X], seq.landmarks[:, idx, Y]
+    lo, hi = -IN_FRAME_TOLERANCE, 1 + IN_FRAME_TOLERANCE
+    with np.errstate(invalid="ignore"):
+        inside = (x >= lo) & (x <= hi) & (y >= lo) & (y <= hi)
+    return vis & inside
 
 
 def _xy(seq: PoseSequence, idx: int) -> np.ndarray:
@@ -109,15 +118,23 @@ class PostureFeatures:
     hip_knee_drop: np.ndarray  # (knee_y - hip_y) / torso_length
     torso_tilt_deg: np.ndarray
     knee_angle_deg: np.ndarray  # NaN when ankles are not visible
+    hip_angle_deg: np.ndarray  # smaller of the two shoulder-hip-knee angles
 
 
 def posture_features(seq: PoseSequence, params: RuleParams) -> PostureFeatures:
     """Classify each frame as seated-like, standing-like, ambiguous or unobservable.
 
-    Uses each leg's vertical hip-to-knee drop normalised by torso length, which is small
-    when seated (thighs roughly horizontal or pointing at the camera) and large
-    when standing (thighs roughly vertical). Requires both shoulders, hips and
-    knees to be visible; upper-body visibility alone never implies sitting.
+    rules-v0.2 cues (thresholds chosen on the Charades tuning split; see docs/VALIDATION.md):
+
+    * seated-like: hips flexed (shoulder-hip-knee angle <= seated_max_hip_angle_deg), OR knees
+      bent (hip-knee-ankle <= seated_max_knee_angle_deg, when ankles are visible), OR both thighs
+      near horizontal/foreshortened (per-leg hip-to-knee drop <= seated_max_drop, the frontal-view
+      cue); and in all cases no leg hanging straight down (max drop < seated_drop_ceiling).
+    * standing-like: hips extended (>= standing_min_hip_angle_deg), both thighs pointing down
+      (min drop >= standing_min_drop), torso upright, knees straight when ankles are visible.
+
+    Requires both shoulders, hips and knees to be visible and in frame; upper-body visibility
+    alone never implies sitting. Frames matching both or neither description are ambiguous.
     """
     thr = params.visibility_threshold
     required = [LEFT_SHOULDER, RIGHT_SHOULDER, LEFT_HIP, RIGHT_HIP, LEFT_KNEE, RIGHT_KNEE]
@@ -135,23 +152,33 @@ def posture_features(seq: PoseSequence, params: RuleParams) -> PostureFeatures:
         tilt = np.degrees(np.arctan2(np.abs(torso[:, 0]), torso[:, 1]))
     observable &= np.nan_to_num(torso_len) > 1e-3
 
+    hip_angle = np.fmin(
+        _angle_deg(_xy(seq, LEFT_SHOULDER), _xy(seq, LEFT_HIP), _xy(seq, LEFT_KNEE)),
+        _angle_deg(_xy(seq, RIGHT_SHOULDER), _xy(seq, RIGHT_HIP), _xy(seq, RIGHT_KNEE)),
+    )
     ankles_visible = _visible(seq, LEFT_ANKLE, thr) & _visible(seq, RIGHT_ANKLE, thr)
     knee_l = _angle_deg(_xy(seq, LEFT_HIP), _xy(seq, LEFT_KNEE), _xy(seq, LEFT_ANKLE))
     knee_r = _angle_deg(_xy(seq, RIGHT_HIP), _xy(seq, RIGHT_KNEE), _xy(seq, RIGHT_ANKLE))
     knee = np.where(ankles_visible, np.minimum(knee_l, knee_r), np.nan)
 
-    upright = tilt <= params.max_torso_tilt_deg
-    legs_straight = np.isnan(knee) | (knee >= params.standing_min_knee_angle_deg)
-    seated = observable & (np.fmax(drop_l, drop_r) <= params.seated_max_drop)
-    standing = observable & upright & (np.fmin(drop_l, drop_r) >= params.standing_min_drop) & legs_straight
+    with np.errstate(invalid="ignore"):
+        max_drop, min_drop = np.fmax(drop_l, drop_r), np.fmin(drop_l, drop_r)
+        knees_bent = ~np.isnan(knee) & (knee <= params.seated_max_knee_angle_deg)
+        seated = observable & (max_drop < params.seated_drop_ceiling) & (
+            (hip_angle <= params.seated_max_hip_angle_deg) | knees_bent | (max_drop <= params.seated_max_drop))
+        legs_straight = np.isnan(knee) | (knee >= params.standing_min_knee_angle_deg)
+        standing = (observable & (tilt <= params.max_torso_tilt_deg) & legs_straight
+                    & (hip_angle >= params.standing_min_hip_angle_deg)
+                    & (min_drop >= params.standing_min_drop))
 
     state = np.full(len(seq), AMBIGUOUS)
-    state[seated] = SEATED
-    state[standing] = STANDING
+    state[seated & ~standing] = SEATED
+    state[standing & ~seated] = STANDING
     state[~observable] = UNKNOWN
     return PostureFeatures(
         state=state,
         hip_knee_drop=np.where(observable, drop, np.nan),
         torso_tilt_deg=np.where(observable, tilt, np.nan),
         knee_angle_deg=knee,
+        hip_angle_deg=np.where(observable, hip_angle, np.nan),
     )

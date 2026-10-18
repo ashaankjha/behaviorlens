@@ -19,8 +19,8 @@ Status key: ✅ implemented and verified · 🟡 implemented with a documented l
 | FR2 | Progress, no crash on decode/model failure | ✅ | `st.progress` callback, `run_analysis` sets `failed` + error | `test_missing_model_is_actionable` |
 | FR2 | Cache by checksum + model version + settings | ✅ | `_pose_cache_path` | cache-hit assertion in `test_video_pipeline_with_fake_estimator_and_cache` |
 | FR2 | Toggled pose-overlay preview | ✅ | `pipeline.render_overlay`, overlay toggle | `test_real_inference_standing_person` |
-| FR3 | `standing_transition` with dwell and visibility gating; unobservable when legs hidden | ✅ | `features.posture_features`, `event_rules.detect_standing` | `test_standing_transition_basic`, `test_upper_body_only_never_infers_sitting`, `test_transition_while_legs_hidden_is_not_guessed`, `test_lunge_is_neither_seated_nor_standing` |
-| FR3 | `hand_raised`: wrist above same-side shoulder ≥0.6 s, confidence-gated, both hands = one event | ✅ | `features.hand_raise_features`, `event_rules.detect_hand_raised` | 11 tests in `test_event_rules.py` |
+| FR3 | `standing_transition` with dwell and visibility gating; unobservable when legs hidden | 🟡 | `features.posture_features` (rules-v0.2: hip/knee angles plus drop, in-frame gating), `event_rules.detect_standing` | synthetic: `test_standing_transition_basic`, `test_upper_body_only_never_infers_sitting`, `test_transition_while_legs_hidden_is_not_guessed`, `test_lunge_is_neither_seated_nor_standing`, `test_angled_seated_pose_is_seated_via_hip_angle`. **Real video:** Charades held-out recall 0.40 and precision 0.40, against 0.20/0.50 for v0.1 ([VALIDATION.md](VALIDATION.md)). Works end to end on real footage; accuracy is modest and limited by leg visibility. |
+| FR3 | `hand_raised`: wrist above same-side shoulder ≥0.6 s, confidence-gated, both hands = one event | ✅ | `features.hand_raise_features`, `event_rules.detect_hand_raised` | 13 synthetic tests in `test_event_rules.py`. **Real video:** UCF101 PullUps 7/8 clips detected, JumpRope 0/8; reviewed disagreements in [VALIDATION.md](VALIDATION.md) |
 | FR3 | Optional `sustained_standing` ≥2 s | ✅ | `detect_standing` | `test_sustained_standing_optional` |
 | FR3 | Smoothing/debounce → segments → merged intervals; edge-case tests | ✅ | `find_segments` gap bridging + minimum durations | occlusion, noise, spike, missing-pose tests |
 | FR3 | `algorithm_version`, parameters and evidence; no fake probabilities | ✅ | `Event.evidence`, `confidence=None` | `test_hand_raised_basic_right` |
@@ -62,7 +62,7 @@ Status key: ✅ implemented and verified · 🟡 implemented with a documented l
 | 1 | `pip install -r requirements.txt`; documented model command and license notice | ✅ verified from a fresh clone (Python 3.11, Linux; needs `libegl1 libgles2`) |
 | 2 | `streamlit run app.py` starts without uncaught exceptions | ✅ AppTest and a live browser run |
 | 3 | Demo shows ≥1 `hand_raised` and ≥1 `standing_transition`, labelled synthetic | ✅ `test_demo_session_end_to_end` (3 and 2) |
-| 4 | New MP4 upload runs decode and inference, or fails with an actionable message | ✅ real-inference tests and browser upload |
+| 4 | New MP4 upload runs decode and inference, or fails with an actionable message | ✅ real-inference tests, browser upload, and 166 real moving-person clips (Charades and UCF101) run through decode → MediaPipe → rules with zero errors (`scripts/validate_real_video.py`) |
 | 5 | Selecting an event shows metadata and seeks the video | ✅ browser seek check (VP9 copy, see LEARNINGS) |
 | 6 | Confirm/reject/edit/manual add persist after restart | ✅ `test_review_actions_persist_across_restart` |
 | 7 | CSV/JSON fields match reviewed statuses | ✅ `test_export.py` |
@@ -70,6 +70,12 @@ Status key: ✅ implemented and verified · 🟡 implemented with a documented l
 | 9 | `pytest -q` passes | ✅ |
 | 10 | No patient footage, keys, private assets or local data committed | ✅ `.gitignore`; `sample_data/` is synthetic only |
 
-## Known gaps
+## Real-video validation (PRD §7, §11)
 
-- Hand-raise and stand-up rules have not been checked against real *moving* staged footage, because none was available to the agent. Real inference has only been run on still photos of adults. Use the README procedure above to close this gap.
+The PRD asks for detection on staged footage of consenting adults. Charades (crowd workers acting out scripts at home, with consent) is used as that footage: 126 clips, plus 40 UCF101 clips for arm movements. Every clip was processed with real MediaPipe inference and scored against independent annotations. The protocol, results and limits are in [`VALIDATION.md`](VALIDATION.md), and both scripts are reproducible.
+
+## Known limitations (documented, not hidden)
+
+- Stand-up detection is modest on real home video (held-out recall 0.40, precision 0.40). Most misses happen when legs are hidden. The remaining false positives come from camera pans, partial-body framing and a second person.
+- Samples are small (10 held-out stand-ups), so the improvement over v0.1 isn't statistically conclusive.
+- Validation footage isn't from ABA settings. The README "own staged clip" procedure covers the intended camera setup.

@@ -28,6 +28,8 @@ Last updated: 2026-10-18
 | Streamlit version | 1.66: `width="stretch"` replaces `use_container_width`; `st.plotly_chart(on_select=…, selection_mode="points")` and `st.dataframe(on_select=…, selection_mode="single-row")` work. |
 | Claude Code hooks | Project hooks live in `.claude/settings.json` and `.claude/hooks/`. PostToolUse exit code 2 sends stderr back to the model as blocking feedback; PreToolUse exit 2 blocks the tool call. Hooks hot-load mid-session (see M13). `CLAUDE_CODE_REMOTE=true` is set in cloud sessions. `CLAUDE_ENV_FILE` lets a SessionStart hook export `PATH` for later commands. |
 | SessionStart cost | A cold `session-start.sh` (venv, requirements, ruff, playwright, model) takes about 40 s; a warm run under 1 s. It runs synchronously so tests never race the install. |
+| Real validation data | Hugging Face hosts a 126-clip **Charades** sample with individual MP4s and parquet metadata (labels and `action_timings`): `Aditya02/Charades-Action-Sequence-Sample`. Label 154 is "standing up", 151 is "sitting down"; sitting and door/light activities give per-frame posture ground truth. The full UCF101 zip (`quchenyuan/UCF101-ZIP`, 7 GB) supports HTTP **Range** requests, so `zipfile` over a seekable HTTP reader extracts single classes without downloading the archive (`HttpRangeFile` in `scripts/fetch_validation_clips.py`). |
+| Validation cost | 166 clips at 5 fps through `pose_landmarker_lite` with 4 processes took about 2.5 min (~9 CPU-min). Landmarks are cached in `data/validation/cache/`, so re-scoring rules takes seconds. |
 | Streamlit testing | `streamlit.testing.v1.AppTest` runs the script headlessly and supports clicking buttons. It can't click Plotly charts; use Playwright for that. |
 
 ## 3. Mistakes and their fixes
@@ -48,9 +50,16 @@ Last updated: 2026-10-18
 | M12 | First `drive.py` run created a demo session; re-running created another | Duplicate sessions in scratch data caused M2 | E2E scripts should start from a fresh `BEHAVIORLENS_DATA_DIR`. |
 | M13 | The first `guard_pkill.py` scanned the raw command text | It blocked a harmless command whose **heredoc body** contained `pkill -f streamlit`, and would have flagged `echo pkill -f …` | Command-scanning hooks must ignore heredoc bodies and only treat words in *command position* (after `sudo`/`exec`/… prefixes) as invocations. Covered by `tests/test_hooks.py`. Hooks in `.claude/settings.json` become active **in the running session** as soon as the file is written, so a buggy hook can block you immediately. Write hook tests to a file (or with the Write tool), not inline in Bash. |
 | M14 | The PostToolUse lint hook linted every edited `.py`, including scratch files outside the repo | Noisy "fix before moving on" feedback for throwaway probes | Scope hooks to `$CLAUDE_PROJECT_DIR` (compare `realpath`s). |
+| M15 | I declared the PRD finished with the rules validated only on synthetic data and still photos | A goal-check hook rejected "complete": the PRD's core claim (detection on staged footage of real people) had no evidence | **Synthetic tests prove the plumbing, not the claim.** Find real, consented, annotated footage before calling detection done. Charades (crowd-acted home scripts) had it all along on Hugging Face. |
+| M16 | v0.1 posture thresholds were tuned to my own synthetic skeleton | On real Charades video: stand-up recall 2/19. Seated drop median was 0.39, against my "≤ 0.35" | Measure feature distributions on labelled real frames *before* picking thresholds. Hip and knee **angles** separate seated from standing far better than vertical drop; the drop cue only suits front-on cameras. |
+| M17 | I assumed "visibility ≥ 0.5" meant "observed" | 2.45% of such landmarks lie outside the image; MediaPipe also hallucinates a head inside the frame on torso-only shots | Require landmarks inside the frame (`IN_FRAME_TOLERANCE`). Treat partial-body framing as a known failure mode rather than patching it from one clip. |
+| M18 | I used dataset class labels (JumpingJack = arms overhead) as ground truth for an operational definition | 5 "misses" were 0.4 s raises (shorter than the PRD's 0.6 s); 2 squat "false positives" were real hands-above-shoulders | Class labels ≠ event definitions. **Look at frames** for every disagreement before changing rules, and report raw and adjudicated numbers separately, flagging who adjudicated. |
+| M19 | I nearly tuned temporal parameters on all the data | The tuning half was dominated by unobservable clips, and the best "all data" settings would have overfit 19 positives | Fix a deterministic tune/holdout split (`split_of`, sha1 of the clip ID) up front. Select on tune, score holdout once, and present the sensitivity table as post-hoc only. |
+| M20 | The first per-frame metrics in VALIDATION.md came from my exploratory script, not the shipped code | Numbers were slightly off (for example "6 of 19" should have been 7) | Recompute every reported number with the production code path before publishing. |
 
 ## 4. Design decisions (and why)
 
+- **Thresholds come from real data, selected on a tuning split** (rules-v0.2). Each threshold in `RuleParams` cites its source in a comment. The previous version's thresholds stay reproducible through `--params`, so every change can be compared on the held-out half.
 - **Rules before ML.** Interpretable heuristics with evidence and parameters, as the PRD asks. `confidence` stays `null` because no score is a calibrated probability.
 - **Tri-state frames** (true / false / unobservable). Missing landmarks never become a negative or positive observation, so an occluded stand-up is a *documented miss*, not a guess. The synthetic demo deliberately contains one.
 - **Synthetic demo bypasses inference.** A stick figure doesn't yield reliable MediaPipe landmarks, so `data_mode="synthetic"` is carried on sessions, events and exports, with a 🧪 banner in the UI.
@@ -67,11 +76,14 @@ Last updated: 2026-10-18
 - Fresh-clone check: clone to scratch, create a venv, `pip install -r requirements.txt`, `python scripts/download_model.py`, `pytest -q`.
 - Hooks: `pytest -q tests/test_hooks.py`; cold-start the SessionStart hook in a copy of the tree without `.venv` (`git ls-files -co --exclude-standard | tar …`) and run `CLAUDE_CODE_REMOTE=true ./.claude/hooks/session-start.sh`.
 - Browser E2E: see the `e2e-verify-streamlit` skill (start the app on a scratch data dir, drive it with Playwright, check `[data-testid=stException]` count == 0).
+- **Real-video validation**: `scripts/fetch_validation_clips.py`, then `scripts/validate_real_video.py --split holdout`. Any rule change must report v0.x against the previous version on the held-out half (see the `validate-real-video` skill and `docs/VALIDATION.md`).
 - Real-inference sanity: run the rules on `male_full_height_hands.jpg` (expect STANDING and no hand raise) and `pose.jpg` (expect ambiguous posture and no hand raise).
 
 ## 6. Open questions and next learning targets
 
-- How the thresholds behave on real *moving* staged footage, and what onset error we see on real stand-ups. Use the README "own staged clip" procedure.
+- ~~How do thresholds behave on real moving footage?~~ Answered in `docs/VALIDATION.md`: modest (held-out stand-up recall 0.40) and bounded by leg visibility.
+- Do front-on clinic-style recordings (the PRD's intended setup) score much higher than Charades home video? Use the README "own staged clip" procedure.
+- Would person tracking plus camera-motion detection remove most of the remaining stand-up false positives (pans, a second person)?
 - Whether `pose_landmarker_full` or `pose_landmarker_heavy` meaningfully improves leg visibility when seated at a table.
 - Side-view cameras: the hip-to-knee drop heuristic assumes a roughly frontal view.
 

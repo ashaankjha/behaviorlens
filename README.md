@@ -74,15 +74,29 @@ The synthetic demo bypasses inference. To check real pose extraction end to end:
 4. Write the true times to a CSV with columns `event_type,start_s,end_s` and upload it under **Analysis details → Agreement with ground truth**. You'll see precision and recall with a configurable time tolerance.
 5. Delete the session when you're done. Don't commit the clip.
 
+### Real-video validation
+
+```bash
+python scripts/fetch_validation_clips.py        # Charades and UCF101 research samples -> data/validation/ (never committed)
+python scripts/validate_real_video.py --split holdout
+```
+
+Results and protocol are in [`docs/VALIDATION.md`](docs/VALIDATION.md). On held-out Charades clips (consenting adults acting out home scripts), v0.2 finds 4/10 stand-ups with precision 0.40, against 2/10 for v0.1. Most misses are stand-ups where the legs are hidden.
+
 Every PRD requirement and acceptance test is mapped to its implementation and test in [`docs/PRD_TRACEABILITY.md`](docs/PRD_TRACEABILITY.md).
 
-## Event definitions (rules-v0.1)
+## Event definitions (rules-v0.2)
 
 All thresholds are engineering heuristics, adjustable under **Analysis controls**. They are not validated clinical criteria.
 
-- **`hand_raised`**: a wrist is above the same-side shoulder by at least 0.5 *head units* (the vertical nose-to-shoulder-line distance, so it doesn't depend on image size) for at least 0.6 s. Shoulders, wrists and nose must be visible (MediaPipe visibility ≥ 0.5). Both hands raised together count as one event with `side: "both"`.
-- **`standing_transition`**: a stable seated-like run followed, within 3 s, by a stable standing-like run, each held for at least 1 s. *Seated-like* means **both** thighs are near horizontal (hip-to-knee vertical drop ≤ 0.35 × torso length). *Standing-like* means both thighs are near vertical (drop ≥ 0.6), the torso is within 35° of vertical, and the knees are straight if the ankles are visible. Hips and knees must be visible. Upper-body visibility alone never implies sitting.
+- **`hand_raised`**: a wrist is above the same-side shoulder by at least 0.5 *head units* (the vertical nose-to-shoulder-line distance, so it doesn't depend on image size) for at least 0.6 s. Shoulders, wrists and nose must be visible (MediaPipe visibility ≥ 0.5) and inside the frame. Both hands raised together count as one event with `side: "both"`.
+- **`standing_transition`**: a stable seated-like run followed, within 5 s, by a stable standing-like run, each held for at least 0.8 s.
+  - *Seated-like*: hips flexed (shoulder–hip–knee angle ≤ 140°), **or** knees bent (≤ 130°, when ankles are visible), **or** both thighs foreshortened or horizontal (hip-to-knee drop ≤ 0.35 × torso length, the front-on camera cue). In every case, neither leg hangs straight down.
+  - *Standing-like*: hips extended (≥ 150°), both thighs pointing down (drop ≥ 0.3), torso within 35° of vertical, and knees straight if the ankles are visible.
+  - Shoulders, hips and knees must be visible **and inside the frame**. Upper-body visibility alone never implies sitting.
 - **`sustained_standing`** (optional, P1): a standing-like run of at least 2 s.
+
+v0.2's posture thresholds were chosen on real video (Charades) and checked on a held-out half; see [`docs/VALIDATION.md`](docs/VALIDATION.md) for the numbers and limits. v0.1's synthetic-tuned thresholds caught fewer than half of real seated frames.
 
 Pipeline: per-frame features → tri-state candidate states (true / false / unobservable) → bridging of gaps up to 0.4 s → temporal segments → minimum-duration filters → events carrying `evidence`, `algorithm_version` and rule parameters.
 

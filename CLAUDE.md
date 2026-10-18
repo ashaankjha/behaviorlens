@@ -16,6 +16,8 @@ sudo apt-get install -y libegl1 libgles2       # Linux: MediaPipe needs EGL even
 .venv/bin/ruff check .                          # lint (config in pyproject.toml)
 .venv/bin/streamlit run app.py                  # UI on :8501
 .venv/bin/python scripts/generate_demo.py       # regenerate synthetic sample_data/
+.venv/bin/python scripts/fetch_validation_clips.py   # real Charades/UCF101 clips -> data/validation/ (never commit)
+.venv/bin/python scripts/validate_real_video.py --split holdout   # real-video metrics (docs/VALIDATION.md)
 ```
 
 In Claude Code cloud sessions, `.claude/hooks/session-start.sh` does the setup automatically.
@@ -35,6 +37,7 @@ In Claude Code cloud sessions, `.claude/hooks/session-start.sh` does the setup a
 
 ## Conventions
 
+- Every rule or threshold change must be measured on real video with the `validate-real-video` skill: select on the tune split, report the held-out half against the previous version, and update `docs/VALIDATION.md`. Synthetic tests alone are not evidence of detection quality (LEARNINGS M15).
 - Every rule change needs a synthetic-sequence test in `tests/test_event_rules.py` (use `conftest.make_seq`). Real-inference regressions go in `tests/test_pipeline.py` and must skip when offline or when the model is missing.
 - Review actions must stay idempotent (`request_id`), and reruns must never overwrite reviewed events.
 - When a Streamlit selectbox `format_func` is used, its labels must be unique (LEARNINGS M2).
@@ -46,6 +49,7 @@ In Claude Code cloud sessions, `.claude/hooks/session-start.sh` does the setup a
   - `extract-chatgpt-share`: recover a conversation and embedded files from a ChatGPT share link
   - `e2e-verify-streamlit`: launch the app and drive it with Playwright, with screenshots
   - `update-learnings`: how to maintain `docs/LEARNINGS.md`
+  - `validate-real-video`: real-footage metrics with tune/holdout discipline
 - Hooks in `.claude/settings.json`:
   - SessionStart (cloud setup)
   - PostToolUse (ruff on edited `.py` files)

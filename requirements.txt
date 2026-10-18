@@ -9,3 +9,4 @@ streamlit>=1.40
 plotly>=5.20
 pandas>=2.1
 pytest>=8.0
+pyarrow>=15  # only for scripts/fetch_validation_clips.py (Charades metadata)

@@ -184,3 +184,38 @@ def test_lunge_is_neither_seated_nor_standing():
     seq = make_seq(3, stand=lambda t: 1.0)
     seq.landmarks[:, 25, 1] = seq.landmarks[:, 23, 1] + 0.03  # left thigh horizontal, right leg straight
     assert set(posture_features(seq, P).state.tolist()) == {0}  # AMBIGUOUS
+
+
+# ------------------------------------------------------------ rules-v0.2 cues learned from real video
+def _angled_thighs(seq, dx=0.15, dy=0.10):
+    """Three-quarter/elevated-camera seated pose: thighs angled forward-down (drop ~0.42 torso)."""
+    for hip, knee, sign in ((23, 25, 1), (24, 26, -1)):
+        seq.landmarks[:, knee, 0] = seq.landmarks[:, hip, 0] + sign * dx
+        seq.landmarks[:, knee, 1] = seq.landmarks[:, hip, 1] + dy
+    return seq
+
+
+def test_angled_seated_pose_is_seated_via_hip_angle():
+    """Real Charades seated frames have drops 0.3-0.55; v0.1's drop-only rule called them ambiguous."""
+    seq = _angled_thighs(make_seq(2, stand=lambda t: 1.0))
+    f = posture_features(seq, P)
+    assert np.all(f.state == SEATED)
+    assert np.nanmedian(f.hip_angle_deg) < P.seated_max_hip_angle_deg
+    v01 = RuleParams(seated_max_hip_angle_deg=0, seated_max_knee_angle_deg=0, seated_drop_ceiling=99)
+    assert not np.any(posture_features(seq, v01).state == SEATED)
+
+
+def test_out_of_frame_landmarks_are_unobservable():
+    """MediaPipe extrapolates off-screen joints with high visibility (2.45% of 'visible' real landmarks)."""
+    seq = make_seq(3, right_up=window(0, 3))
+    seq.landmarks[:, 16, 1] = -0.2  # right wrist above the top edge of the image
+    f = hand_raise_features(seq, P)
+    assert np.all(f.right == UNKNOWN)
+    assert detect_hand_raised(seq, P, "s") == []
+
+
+def test_posture_gap_bridging_is_independent_of_hand_gap():
+    seq = make_seq(10, stand=stand_up_at(4.0, 1.2), right_up=lambda t: 1.0 if (2 <= t < 2.4 or 3.0 <= t < 3.4) else 0.0)
+    wide_posture = RuleParams(posture_merge_gap_s=1.5)
+    # widening posture bridging must not merge two brief hand flicks into one >=0.6 s raise
+    assert detect_hand_raised(seq, wide_posture, "s") == []
