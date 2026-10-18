@@ -10,7 +10,7 @@ Unit tests and `AppTest` can't click Plotly charts or play video. This skill run
 ## Steps
 
 ```bash
-SCR="$SCRATCHPAD/e2e"                     # always a fresh dir (LEARNINGS M12)
+SCR="${SCRATCHPAD:?set SCRATCHPAD to a scratch dir}/e2e"   # always a fresh dir (M12); unset would mean /e2e (M23)
 rm -rf "$SCR"
 D=.claude/skills/e2e-verify-streamlit/scripts
 URL=$($D/run_app.sh "$SCR/data" 8502)       # waits for /_stcore/health

@@ -35,7 +35,7 @@ sudo apt-get install -y libegl1 libgles2
 # One-time download of the pose model (~6 MB from Google's MediaPipe model bucket)
 python scripts/download_model.py
 
-streamlit run app.py          # opens http://localhost:8501
+streamlit run app.py          # serves http://localhost:8501 (headless: open it in your browser)
 ```
 
 Run the tests:

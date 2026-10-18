@@ -33,6 +33,7 @@ Last updated: 2026-10-18
 | Pose model sizes and speed | `float16/latest`: lite 5.8 MB, full 9.4 MB, heavy 30.7 MB (same URL pattern, `pose_landmarker_{lite,full,heavy}`). Single-process CPU inference: 24 / 28 / 60 ms per frame. Full is only ~15% slower than lite; heavy is 2.5×. |
 | MediaPipe visibility calibration | Visibility scores are **not comparable across pose models**. On Charades, knees with visibility ≥ 0.5: lite 58%, full 55%, heavy 37% of pose frames (median 0.61 / 0.56 / 0.27); hips and shoulders barely differ. |
 | Cloud sessions | `create_session` (claude-code-remote MCP) starts a child cloud session from a repo and branch. Set `outcome_branch` to a non-`main` branch and `permission_mode: auto` (`plan` would stall unattended). Children don't report back on a clean finish: poll with `get_session` and `list_events`, or arm a `send_later` check-in. |
+| Streamlit network | With `server.headless = true` and no `server.address`, Streamlit 1.66 GETs `checkip.amazonaws.com` on every start (to print an "External URL") and binds `0.0.0.0`. `--server.address localhost` (or `address = "localhost"` in `config.toml`) avoids both. See AUDIT D1. |
 | Streamlit testing | `streamlit.testing.v1.AppTest` runs the script headlessly and supports clicking buttons. It can't click Plotly charts; use Playwright for that. |
 
 ## 3. Mistakes and their fixes
@@ -61,6 +62,7 @@ Last updated: 2026-10-18
 | M20 | The first per-frame metrics in VALIDATION.md came from my exploratory script, not the shipped code | Numbers were slightly off (for example "6 of 19" should have been 7) | Recompute every reported number with the production code path before publishing. |
 | M21 | `validate_real_video.py` cached landmarks under `<clip>_<fps>fps.npz`, with no model in the key | Switching `BEHAVIORLENS_MODEL_PATH` to full/heavy would have scored **lite's** landmarks and reported "no difference" | Every cache key must include everything that changes the cached value: the model version (name + weight hash) and fps (`cache_path`, test `test_validation_cache_key_includes_model_and_fps`). Sanity-check a new run by reproducing a known baseline exactly (the lite rows matched v0.2 to the count). |
 | M22 | I expected the larger pose models to help leg visibility, so stand-up recall would rise | Heavy found 0/19 stand-ups (lite 5/19); full 3/19 | Thresholds are coupled to the model that selected them, **including `visibility_threshold`**: heavy is more conservative about occluded legs, so the same 0.5 gate drops most posture frames. A model swap is a threshold change and needs the full tune/holdout protocol. Even at matched observability (diagnostic only), heavy didn't beat lite. |
+| M23 | Skill commands used `SCR="$SCRATCHPAD/e2e"`, assuming the variable was set | In a cloud shell `$SCRATCHPAD` was empty, so the next line would have run `rm -rf /e2e` | Never let a path in an `rm -rf` depend on an env var that may be unset. Use `${SCRATCHPAD:?…}` so the command fails loudly. Fixed in the `e2e-verify-streamlit` and `extract-chatgpt-share` skills. |
 
 ## 4. Design decisions (and why)
 
@@ -85,6 +87,8 @@ Last updated: 2026-10-18
 - Hooks: `pytest -q tests/test_hooks.py`; cold-start the SessionStart hook in a copy of the tree without `.venv` (`git ls-files -co --exclude-standard | tar …`) and run `CLAUDE_CODE_REMOTE=true ./.claude/hooks/session-start.sh`.
 - Browser E2E: see the `e2e-verify-streamlit` skill (start the app on a scratch data dir, drive it with Playwright, check `[data-testid=stException]` count == 0).
 - **Real-video validation**: `scripts/fetch_validation_clips.py`, then `scripts/validate_real_video.py --split holdout`. Any rule change must report v0.x against the previous version on the held-out half (see the `validate-real-video` skill and `docs/VALIDATION.md`).
+- **Score an old rules version exactly**: `--params` can't switch off v0.2's in-frame gating. Instead, `git worktree add --detach <dir> <old-commit>`, copy in the current `scripts/validate_real_video.py`, symlink the model, and run it with `BEHAVIORLENS_DATA_DIR=<repo>/data` so it reuses the cached landmarks (a few seconds per split). Actual v0.1 matched the documented recall and precision exactly (AUDIT claims 17–18).
+- **Clean-room check**: clone into scratch and drop the session `.venv` from `PATH` before `python3.11 -m venv`, or `ruff`/`playwright` silently resolve from the pre-built venv.
 - Real-inference sanity: run the rules on `male_full_height_hands.jpg` (expect STANDING and no hand raise) and `pose.jpg` (expect ambiguous posture and no hand raise).
 
 ## 6. Open questions and next learning targets
