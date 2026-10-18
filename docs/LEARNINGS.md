@@ -1,0 +1,85 @@
+# BehaviorLens: living learnings log
+
+A running record of what we have learned building BehaviorLens: environment gotchas, library behavior, mistakes and their fixes, and the decisions behind the design. **Append to it whenever you learn something non-obvious.** See "How to update" at the end.
+
+Last updated: 2026-10-18
+
+---
+
+## 1. Project origin
+
+- The project spec came from a ChatGPT share link. The share page is rendered client-side, so `WebFetch` returned only the page title. The conversation, including the full PRD written by a sandbox `cat > BehaviorLens_PRD.md <<'EOF'` tool call, is embedded in the HTML as a React Router turbo-stream (`streamController.enqueue("…")`). Decoding it recovered the PRD verbatim (`docs/PRD.md`). The method is packaged as the `extract-chatgpt-share` skill.
+- A `sandbox:/mnt/data/...` download link in a ChatGPT answer is **not** fetchable. Look for the tool call that wrote the file inside the share data instead.
+
+## 2. Environment and tooling
+
+| Topic | Learning |
+|---|---|
+| Python | The cloud container defaults to Python 3.13, but the PRD targets 3.11. Use `python3.11 -m venv .venv`. |
+| MediaPipe | `mediapipe==1.1.1` (newer than 0.10.x) keeps the `mediapipe.tasks.python.vision.PoseLandmarker` API: `PoseLandmarkerOptions(base_options=BaseOptions(model_asset_path=…), running_mode=RunningMode.VIDEO, num_poses=…)`, then `detect_for_video(mp.Image(...), timestamp_ms)`. |
+| MediaPipe on headless Linux | Even CPU inference loads `libEGL.so.1`. Without it: `OSError: libEGL.so.1: cannot open shared object file`. Fix: `apt-get install -y libegl1 libgles2`. |
+| MediaPipe VIDEO mode | Timestamps must be strictly increasing integer milliseconds. We derive them from source frame indices and enforce `max(ts, last + 1)`. |
+| Model URL | `https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/latest/pose_landmarker_lite.task` (~5.8 MB). Downloaded, gitignored, never committed. |
+| Public test images | The `mediapipe-assets` GCS bucket is listable through the JSON API (`storage.googleapis.com/storage/v1/b/mediapipe-assets/o`). Useful adult photos: `pose.jpg` (yoga lunge, arms horizontal) and `male_full_height_hands.jpg` (standing, full body). Use them only in temp dirs; don't commit them (licence unclear). |
+| Wikimedia Commons | The API returned HTTP 429 from this container, so don't rely on it for test media. |
+| ffmpeg | `imageio-ffmpeg` bundles a static ffmpeg with libx264. We use it for H.264 previews, the demo video and overlays, so system ffmpeg isn't needed. |
+| OpenCV `mp4v` | Browsers can't play MPEG-4 Part 2. Anything shown in a browser must be H.264 (or VP9/WebM). |
+| Playwright Chromium | The bundled Chromium (`/opt/pw-browsers/chromium-1194/chrome-linux/chrome`) has **no H.264**: `canPlayType('video/mp4; codecs="avc1…"') == ''`, and `<video>` fails with error code 4. VP9 and AV1 report `"probably"`. To test playback, point a scratch session at a VP9 copy. Real Chrome, Edge, Safari and Firefox play H.264. |
+| Streamlit version | 1.66: `width="stretch"` replaces `use_container_width`; `st.plotly_chart(on_select=…, selection_mode="points")` and `st.dataframe(on_select=…, selection_mode="single-row")` work. |
+| Claude Code hooks | Project hooks live in `.claude/settings.json` and `.claude/hooks/`. PostToolUse exit code 2 sends stderr back to the model as blocking feedback; PreToolUse exit 2 blocks the tool call. Hooks hot-load mid-session (see M13). `CLAUDE_CODE_REMOTE=true` is set in cloud sessions. `CLAUDE_ENV_FILE` lets a SessionStart hook export `PATH` for later commands. |
+| SessionStart cost | A cold `session-start.sh` (venv, requirements, ruff, playwright, model) takes about 40 s; a warm run under 1 s. It runs synchronously so tests never race the install. |
+| Streamlit testing | `streamlit.testing.v1.AppTest` runs the script headlessly and supports clicking buttons. It can't click Plotly charts; use Playwright for that. |
+
+## 3. Mistakes and their fixes
+
+| # | Mistake | Symptom | Fix and lesson |
+|---|---|---|---|
+| M1 | `pkill -f "streamlit run"` inside a compound Bash command | The tool shell killed itself (exit 144), because the pattern appears in the shell's own command line | Use `pkill -f '[s]treamlit run'` or `kill $(pgrep -f '[.]venv/bin/streamlit')`. The bracket trick stops the pattern matching itself. A PreToolUse hook (`guard_pkill.py`) now blocks the unsafe form. |
+| M2 | Session labels in the selectbox weren't unique (same filename, same minute) | Clicking a timeline bar re-rendered a **different** session, so selection looked broken | This Streamlit version's selectbox resolves the choice by its *formatted label*. Make `format_func` output unique (we append the short session ID). |
+| M3 | Hand raise measured as wrist above shoulder by 0.02 in normalized image units | Real yoga photo with horizontal arms became `hand_raised` | Measure in body-relative units. We use "head units" (nose-to-shoulder-line height) with a threshold of 0.5. Real inference exposed what the synthetic tests had missed. |
+| M4 | Seated test used the **average** of both thighs | A lunge (one thigh horizontal, one leg straight) read as "seated" | Require **both** legs to agree (`max(drop) ≤ seated`, `min(drop) ≥ standing`). Otherwise the frame is ambiguous. |
+| M5 | `visible_frame_ratio` counted a frame as visible if *any* arm was observable | A dropped right-wrist frame during a right-hand raise still reported 100% visibility | Compute visibility for the side(s) actually raised. |
+| M6 | A session with zero events was marked `reviewed` immediately | The status skipped review-ready after an empty analysis | Treat "no events" as review-ready; the reviewer may still add manual events. |
+| M7 | Export set the status to `exported` even with pending events | The stepper showed "✓ Reviewed" while 7 events were pending | `Store.mark_exported` only advances fully reviewed sessions. |
+| M8 | Clicking Plotly bars with `locator.click()` timed out | Plotly's `nsewdrag` layer intercepts pointer events | Click at the bar's bounding-box centre with `page.mouse.click(x, y)`, which is what a real user does. |
+| M9 | `@st.cache_resource def get_store()` with no arguments | Tests would share one Store across temp data dirs | Key the cached resource by data-dir path: `get_store(str(config.data_dir()))`. |
+| M10 | First upload temp file used a fixed name (`_incoming/upload.mp4`) | Concurrent uploads could clobber each other | Use a UUID temp name. |
+| M11 | Screenshots with `full_page=True` were cut off | Streamlit scrolls inside its own container, not the page | Use a tall viewport (for example 1440×1750) and `scroll_into_view_if_needed` instead. |
+| M12 | First `drive.py` run created a demo session; re-running created another | Duplicate sessions in scratch data caused M2 | E2E scripts should start from a fresh `BEHAVIORLENS_DATA_DIR`. |
+| M13 | The first `guard_pkill.py` scanned the raw command text | It blocked a harmless command whose **heredoc body** contained `pkill -f streamlit`, and would have flagged `echo pkill -f …` | Command-scanning hooks must ignore heredoc bodies and only treat words in *command position* (after `sudo`/`exec`/… prefixes) as invocations. Covered by `tests/test_hooks.py`. Hooks in `.claude/settings.json` become active **in the running session** as soon as the file is written, so a buggy hook can block you immediately. Write hook tests to a file (or with the Write tool), not inline in Bash. |
+| M14 | The PostToolUse lint hook linted every edited `.py`, including scratch files outside the repo | Noisy "fix before moving on" feedback for throwaway probes | Scope hooks to `$CLAUDE_PROJECT_DIR` (compare `realpath`s). |
+
+## 4. Design decisions (and why)
+
+- **Rules before ML.** Interpretable heuristics with evidence and parameters, as the PRD asks. `confidence` stays `null` because no score is a calibrated probability.
+- **Tri-state frames** (true / false / unobservable). Missing landmarks never become a negative or positive observation, so an occluded stand-up is a *documented miss*, not a guess. The synthetic demo deliberately contains one.
+- **Synthetic demo bypasses inference.** A stick figure doesn't yield reliable MediaPipe landmarks, so `data_mode="synthetic"` is carried on sessions, events and exports, with a 🧪 banner in the UI.
+- **Reruns preserve reviewed work.** Pending algorithm events are replaced; confirmed, rejected, edited and manual events are kept; overlapping new suggestions are skipped.
+- **Idempotent actions.** Each review action carries a `request_id` with a UNIQUE constraint in `review_history`, so Streamlit reruns can't double-apply an action.
+- **Pose cache** keyed by checksum, model version and fps, so threshold tweaks re-run only the cheap rule stage.
+- **Exports omit the source filename** (it may contain a person's name) and use the content SHA-256 instead.
+- **Before/after thumbnails** are taken 0.5 s outside the event interval (clamped to the video), cached as JPEGs keyed by timestamp so edits regenerate them, and shown only in the UI.
+- **Thumbnails and overlays** live under `data/sessions/<id>/` so Delete session removes them, and they're never exported.
+
+## 5. Verification recipes that worked
+
+- Full suite: `.venv/bin/python -m pytest -q` (~5 s; the two real-inference tests download sample photos and skip offline).
+- Fresh-clone check: clone to scratch, create a venv, `pip install -r requirements.txt`, `python scripts/download_model.py`, `pytest -q`.
+- Hooks: `pytest -q tests/test_hooks.py`; cold-start the SessionStart hook in a copy of the tree without `.venv` (`git ls-files -co --exclude-standard | tar …`) and run `CLAUDE_CODE_REMOTE=true ./.claude/hooks/session-start.sh`.
+- Browser E2E: see the `e2e-verify-streamlit` skill (start the app on a scratch data dir, drive it with Playwright, check `[data-testid=stException]` count == 0).
+- Real-inference sanity: run the rules on `male_full_height_hands.jpg` (expect STANDING and no hand raise) and `pose.jpg` (expect ambiguous posture and no hand raise).
+
+## 6. Open questions and next learning targets
+
+- How the thresholds behave on real *moving* staged footage, and what onset error we see on real stand-ups. Use the README "own staged clip" procedure.
+- Whether `pose_landmarker_full` or `pose_landmarker_heavy` meaningfully improves leg visibility when seated at a table.
+- Side-view cameras: the hip-to-knee drop heuristic assumes a roughly frontal view.
+
+---
+
+## How to update this file
+
+- Add an entry the moment something surprises you: a library behaving unexpectedly, an environment failure, a bug you caused, or a test that caught a wrong assumption.
+- Mistakes go in §3 with **symptom → fix → lesson**. Number them sequentially (M13, M14, …).
+- Environment facts go in §2. Design trade-offs go in §4. Change existing lines rather than duplicating them.
+- Bump "Last updated". The `update-learnings` skill describes the routine.

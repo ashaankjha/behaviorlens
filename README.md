@@ -50,7 +50,7 @@ Without the model, everything except real-video inference still works: the synth
 
 1. Click **Load synthetic demo session** in the sidebar. This loads a 40 s **synthetic** session: programmatically generated pose landmarks plus a stick-figure video. It is clearly labelled, and MediaPipe is *not* run on it.
 2. Click a bar on the timeline, or a row in the table, to select an event. The player jumps to about 1 s before the event.
-3. Open **Supporting evidence** to see why the rule fired. Then **Confirm**, **Reject**, or edit the type and times. Edits keep the original proposal.
+3. Check the before/after thumbnails and open **Supporting evidence** to see why the rule fired. Then **Confirm**, **Reject**, or edit the type and times. Edits keep the original proposal.
 4. Use **Add manual event** for anything the rules missed.
 5. **Export**: download CSV/JSON. Rejected events are kept, with their status, unless you filter them out.
 6. **Analysis details**: observability warnings, per-type summary, and agreement with the scripted ground truth. The demo includes one deliberate miss: a stand-up that happens while the legs are hidden behind a desk.
@@ -58,6 +58,23 @@ Without the model, everything except real-video inference still works: the synth
 To try a real video, upload a short MP4/MOV/AVI (≤100 MB, ≤5 min) of a **consenting adult**, then click **Run analysis**. For real videos you can also render a low-resolution **pose overlay** preview.
 
 ![Analysis details with ground-truth agreement](docs/screenshots/details.png)
+
+### Optional: test with your own staged clip (about 5 minutes)
+
+The synthetic demo bypasses inference. To check real pose extraction end to end:
+
+1. With the consent of the adult being filmed, record a 20–40 s clip on a phone. Frame one person from the front, full body visible, in an uncluttered room.
+2. Act out the following, ideally with a stopwatch running:
+   - sit on a chair for about 5 s
+   - stand up and stay standing for about 5 s
+   - raise your right hand for about 2 s, then lower it
+   - flick a hand up for under half a second (this should *not* produce an event)
+   - sit down (this should *not* produce a `standing_transition`)
+3. Upload the clip, click **Run analysis**, then **Render pose overlay preview** to check the skeleton tracks the body.
+4. Write the true times to a CSV with columns `event_type,start_s,end_s` and upload it under **Analysis details → Agreement with ground truth**. You'll see precision and recall with a configurable time tolerance.
+5. Delete the session when you're done. Don't commit the clip.
+
+Every PRD requirement and acceptance test is mapped to its implementation and test in [`docs/PRD_TRACEABILITY.md`](docs/PRD_TRACEABILITY.md).
 
 ## Event definitions (rules-v0.1)
 

@@ -64,7 +64,9 @@ def action_create_upload() -> None:
         flash("warning", "Choose a video file first.")
         return
     try:
-        sid = pipeline.create_upload_session(store, up.name, up, up.size)
+        with st.spinner("Validating, fingerprinting and storing the video locally (non-H.264 files are "
+                        "transcoded for browser playback)…"):
+            sid = pipeline.create_upload_session(store, up.name, up, up.size)
         ss["session_select"] = sid
         flash("success", "Video stored locally. Run analysis to detect candidate observations.")
     except VideoValidationError as exc:
@@ -374,6 +376,11 @@ with tab_review:
             if ev.original_proposal:
                 o = ev.original_proposal
                 st.caption(f"Original proposal: {o['event_type']} {o['start_s']:.2f}s – {o['end_s']:.2f}s")
+            thumbs = pipeline.event_thumbnails(store, session_id, ev.start_s, ev.end_s)
+            if thumbs:
+                tc = st.columns(len(thumbs))
+                for col, (t, path), label in zip(tc, thumbs, ("Before", "After")):
+                    col.image(str(path), caption=f"{label} · {t:.1f}s", width="stretch")
             with st.expander("Supporting evidence"):
                 st.json(ev.evidence)
             st.text_input("Reviewer note", value=ev.review_note, key=f"note_{ev.event_id}")

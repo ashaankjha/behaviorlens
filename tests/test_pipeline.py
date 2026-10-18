@@ -222,3 +222,17 @@ def test_real_inference_lunge_with_level_arms_has_no_events(store, tmp_path):
     res = pipeline.run_analysis(store, sid)
     assert res["stats"]["pose_detected_ratio"] >= 0.9
     assert store.list_events(sid) == []
+
+
+def test_event_thumbnails_are_local_and_deleted_with_session(store):
+    sid = pipeline.create_demo_session(store)
+    thumbs = pipeline.event_thumbnails(store, sid, 5.2, 6.2)
+    assert [t for t, _ in thumbs] == [4.7, 6.7]
+    for _, path in thumbs:
+        img = cv2.imread(str(path))
+        assert img is not None and img.shape[0] == 200
+        assert store.session_dir(sid) in path.parents
+    # clamped to the video bounds
+    assert pipeline.event_thumbnails(store, sid, 0.1, 39.9)[0][0] == 0.0
+    store.delete_session(sid)
+    assert not any(p.exists() for _, p in thumbs)

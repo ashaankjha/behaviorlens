@@ -245,3 +245,40 @@ def render_overlay(store: Store, session_id: str, max_height: int = 360,
             writer.write(frame)
     store.update_session(session_id, overlay_relpath=store.relpath(out))
     return out
+
+
+# ---------------------------------------------------------------- thumbnails (P1)
+def event_thumbnails(store: Store, session_id: str, start_s: float, end_s: float,
+                     offset_s: float = 0.5, height: int = 200) -> list[tuple[float, Path]]:
+    """Local JPEG frames just before an event starts and just after it ends.
+
+    Cached in the session directory (removed by Delete session) and keyed by
+    timestamp, so editing an event's times produces fresh thumbnails. Shown in
+    the UI only; never exported.
+    """
+    session = store.get_session(session_id)
+    video = store.path(session.get("video_relpath"))
+    if video is None or not video.is_file():
+        return []
+    fps = float(session["fps"] or 0)
+    last = max(0.0, (session["duration_s"] or 0) - (1.0 / fps if fps else 0.0))
+    times = [max(0.0, start_s - offset_s), min(last, end_s + offset_s)]
+    out_dir = store.session_dir(session_id) / "thumbs"
+    out_dir.mkdir(exist_ok=True)
+    results = []
+    cap = cv2.VideoCapture(str(video))
+    try:
+        for t in times:
+            path = out_dir / f"{t:08.2f}.jpg"
+            if not path.is_file():
+                cap.set(cv2.CAP_PROP_POS_FRAMES, int(round(t * fps)) if fps else 0)
+                ok, frame = cap.read()
+                if not ok or frame is None:
+                    continue
+                scale = height / frame.shape[0]
+                frame = cv2.resize(frame, (int(frame.shape[1] * scale), height))
+                cv2.imwrite(str(path), frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
+            results.append((round(t, 2), path))
+    finally:
+        cap.release()
+    return results
