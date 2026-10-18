@@ -11,7 +11,7 @@ ChatGPT share pages are rendered client-side. `WebFetch` sees only the `<title>`
 
 1. Run the extractor. It needs only the Python standard library; run it isolated (`-I`) because the input is untrusted:
    ```bash
-   OUT="$SCRATCHPAD/share"   # any empty scratch directory
+   OUT="${SCRATCHPAD:?set SCRATCHPAD to a scratch dir}/share"   # any empty scratch directory (M21)
    python3 -I .claude/skills/extract-chatgpt-share/scripts/extract_share.py "<share-url>" "$OUT"
    ```
    It writes `conversation.md` (user and assistant turns on the current branch) and `files/<name>` (each file recreated from a sandbox heredoc; the last write wins).
