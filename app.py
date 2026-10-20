@@ -27,6 +27,7 @@ LABELS = {
     "other_observable": "Other observable",
 }
 STATUS_COLORS = {"pending": "#c9a227", "confirmed": "#3fa66b", "rejected": "#d0574f", "edited": "#4f8fd0"}
+CAMERA_LANE = "Camera motion"
 STEPS = [("ready", "Ready"), ("processing", "Processing"), ("review_ready", "Review-ready"),
          ("reviewed", "Reviewed"), ("exported", "Exported")]
 
@@ -150,8 +151,17 @@ def status_stepper(status: str) -> None:
     st.markdown(" → ".join(parts))
 
 
-def timeline_chart(session_id: str, events: list[Event], duration: float) -> None:
+def timeline_chart(session_id: str, events: list[Event], duration: float,
+                   camera_intervals: list[list[float]] | None = None) -> None:
     fig = go.Figure()
+    if camera_intervals:
+        # Context lane, not an event: no customdata, so clicking it selects nothing.
+        fig.add_trace(go.Bar(
+            orientation="h", base=[a for a, _ in camera_intervals],
+            x=[max(b - a, 0.15) for a, b in camera_intervals], y=[CAMERA_LANE] * len(camera_intervals),
+            name="camera moving", marker=dict(color="#8a8f98", line=dict(width=0)), opacity=0.6,
+            hovertemplate="camera moving %{base:.1f}s, %{x:.1f}s<br>posture not assessed<extra></extra>",
+        ))
     for status, color in STATUS_COLORS.items():
         evs = [e for e in events if e.review_status == status]
         if not evs:
@@ -298,7 +308,8 @@ with tab_review:
 
         st.markdown("#### Candidate observations timeline")
         if events:
-            timeline_chart(session_id, events, duration)
+            timeline_chart(session_id, events, duration,
+                           (analysis or {}).get("stats", {}).get("camera_motion_intervals"))
             events_table(session_id, events)
             st.caption("Click a bar or a table row to review that event.")
         elif analysis:
@@ -463,6 +474,14 @@ with tab_details:
         if analysis:
             for w in analysis["warnings"]:
                 st.warning(w)
+            cam = analysis["stats"]
+            if cam.get("camera_motion_available"):
+                st.caption(f"Camera motion: moving in {cam['camera_moving_ratio']:.0%} of sampled frames, "
+                           f"undetermined in {cam['camera_motion_unknown_ratio']:.0%}. Posture is not assessed "
+                           "while the camera moves (grey *Camera motion* lane on the timeline).")
+            elif not synthetic:
+                st.caption("Camera motion was not estimated for this analysis (older cached landmarks); "
+                           "no frames were excluded for camera movement.")
             st.json({k: analysis[k] for k in ("analysis_id", "created_at", "algorithm_version",
                                               "model_version", "settings", "stats")}, expanded=False)
         else:

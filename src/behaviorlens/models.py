@@ -22,6 +22,11 @@ LEFT_ANKLE, RIGHT_ANKLE = 27, 28
 NUM_LANDMARKS = 33
 # Per-landmark channels stored in PoseSequence.landmarks.
 X, Y, Z, VISIBILITY, PRESENCE = range(5)
+# Per-frame channels stored in PoseSequence.camera_motion (see camera_motion.py): motion of
+# the image centre from the previous sampled frame as a fraction of width/height, rotation,
+# log scale change, RANSAC inlier ratio and the estimation method (0 none, 1 features, 2 phase).
+MOTION_DX, MOTION_DY, MOTION_ROT_DEG, MOTION_LOG_SCALE, MOTION_INLIERS, MOTION_METHOD = range(6)
+MOTION_CHANNELS = 6
 
 DataMode = Literal["synthetic", "video_inference"]
 Source = Literal["algorithm", "manual"]
@@ -43,6 +48,10 @@ class PoseSequence:
     landmarks has shape (N, 33, 5) holding normalized x, y, z, visibility and
     presence. Frames without a detected person are all-NaN and flagged in
     ``has_pose``. Image coordinates: x grows rightwards, y grows downwards.
+
+    camera_motion, if present, has shape (N, MOTION_CHANNELS). It is None for synthetic
+    sequences and for files saved before camera-motion estimation existed; rules then
+    treat camera motion as unknown and mask nothing.
     """
 
     timestamps_s: np.ndarray
@@ -52,6 +61,7 @@ class PoseSequence:
     duration_s: float
     num_people: np.ndarray | None = None
     data_mode: DataMode = "video_inference"
+    camera_motion: np.ndarray | None = None
 
     def __post_init__(self) -> None:
         self.timestamps_s = np.asarray(self.timestamps_s, dtype=float)
@@ -64,6 +74,11 @@ class PoseSequence:
             raise ValueError("timestamps must be strictly increasing")
         if self.num_people is None:
             self.num_people = self.has_pose.astype(int)
+        if self.camera_motion is not None:
+            self.camera_motion = np.asarray(self.camera_motion, dtype=float)
+            if self.camera_motion.shape != (n, MOTION_CHANNELS):
+                raise ValueError(f"camera_motion must have shape ({n}, {MOTION_CHANNELS}), "
+                                 f"got {self.camera_motion.shape}")
 
     def __len__(self) -> int:
         return len(self.timestamps_s)
@@ -77,6 +92,7 @@ class PoseSequence:
         return 1.0 / self.sample_fps
 
     def save_npz(self, path) -> None:
+        extra = {} if self.camera_motion is None else {"camera_motion": self.camera_motion.astype(np.float32)}
         np.savez_compressed(
             path,
             timestamps_s=self.timestamps_s,
@@ -85,6 +101,7 @@ class PoseSequence:
             num_people=self.num_people,
             meta=np.array([self.sample_fps, self.duration_s]),
             data_mode=np.array(self.data_mode),
+            **extra,
         )
 
     @classmethod
@@ -98,6 +115,8 @@ class PoseSequence:
                 duration_s=float(d["meta"][1]),
                 num_people=d["num_people"],
                 data_mode=str(d["data_mode"]),
+                # Optional: files written before camera-motion estimation have no such key.
+                camera_motion=d["camera_motion"].astype(float) if "camera_motion" in d.files else None,
             )
 
 

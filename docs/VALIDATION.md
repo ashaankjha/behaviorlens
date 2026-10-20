@@ -127,6 +127,94 @@ Not because they see legs worse. They **report lower visibility for legs**, so t
 
 Caveats as above: 19 stand-up windows and 40 action clips, home and sports footage rather than clinic recordings, and incomplete Charades annotations. All intervals are wide.
 
+## Camera motion
+
+Run date: 2026-10-20. **Question:** do handheld camera pans, tilts and zooms cause false `standing_transition` suggestions, and does treating strongly moving-camera frames as unobservable for posture remove them without costing real stand-ups?
+
+**Why it matters.** Landmarks are image coordinates. When the camera moves, the apparent body geometry changes even if the person does not, and a pan can swing the view away from the person entirely. In the v0.2 review (*What we learned*, item 6), two false positives came from camera pans in clip HIOY0 (≈ 20.4 s and ≈ 33.4 s).
+
+### Method
+
+`src/behaviorlens/camera_motion.py`, computed inside the pose frame loop (`pipeline.extract_pose`) and stored with the landmarks (`PoseSequence.camera_motion`; older `.npz` files without it still load and mask nothing).
+
+1. Each sampled frame is downscaled to 320 px wide grayscale.
+2. Corners (`goodFeaturesToTrack`) are picked in the previous frame **outside the detected person's padded landmark box**, tracked with pyramidal Lucas–Kanade, checked forward–backward, and matches that land in the current person box are dropped.
+3. A RANSAC similarity fit (`estimateAffinePartial2D`) gives image-centre translation (fraction of frame width/height), rotation, log scale change and the inlier ratio.
+4. With too few features or inliers, phase correlation on the frames (person box blanked) gives a translation-only estimate if its peak response is ≥ 0.15. Otherwise the frame is *unknown*.
+5. Rules (`camera_motion_state`): a reliable estimate (phase correlation, or features with inlier ratio ≥ 0.5) is **moving** if translation > 0.2 frame/s, rotation > 10°/s or |log scale| > 0.1/s, otherwise **static**; anything else is **unknown**. Unknown never masks: missing evidence about the camera is not evidence that it moved. Moving frames become `UNKNOWN` for posture (`features.posture_features`). Raw estimates are stored, so thresholds can change without re-extraction.
+
+On the synthetic tests (`tests/test_camera_motion.py`: a textured world warped by known pans, tilts, rolls and zooms, with and without an independently moving textured "person"), translation is recovered within 0.004 frame widths, rotation within 0.2°, log scale within 0.006, and a static camera with a moving person stays static.
+
+**Speed.** 3.7 ms per sampled frame on average (median 3.3, p95 6.0; 2,415 frames from 20 Charades/UCF101 clips at 5 fps, single CPU process, decode excluded). That is about 15 % on top of `pose_landmarker_lite` inference (24 ms/frame). 98 % of frame pairs used the feature path and 0.7 % phase correlation; 1.3 % were unknown (mostly first frames). The full validation extraction (166 clips, pose and motion, 4 workers) took 205 s wall.
+
+**Data.** Camera motion is common but mostly brief: the median Charades clip has the camera moving in 1–2 % of sampled frames, and 35 of 126 clips exceed 10 %.
+
+### Threshold selection (tuning half only)
+
+A grid over translation {0.15, 0.2, 0.3, 0.5, 0.75, off} frame/s × rotation {5, 10, 20, off} °/s × scale {0.1, 0.2, 0.3, off}/s × padding {0, 1} frames was scored on the **tune** split. The tune half has 9 stand-up windows, of which v0.2 finds 1 (V1PRP), and 2 detections (1 false, JLQLC, unrelated to the camera). It therefore shows only the *cost* of masking. The pre-declared rule was: **the most sensitive setting that loses no tune stand-up and adds no tune false positive**. Translation 0.15 /s, rotation 5 °/s, or a one-frame pad at 0.2 /s each lose V1PRP (its person stands up just as the camera starts to follow), so the selection is translation 0.2 /s, rotation 10 °/s, scale 0.1 /s, no padding. It masks 6.8 % of tune frames.
+
+The tune split's per-frame data agrees on the direction: activity-labelled posture frames with camera translation above 0.2 /s were misclassified 25 % of the time against 12.5 % otherwise (16 frames, so weak evidence on its own).
+
+**Hand rules are not masked.** On the tune UCF101 clips, masking moving-camera frames for `hand_raised` changed no clip's outcome and only split one PullUps event in two. The hand cue (wrist above shoulder in the same frame) does not depend on where the camera points. Camera motion is still reported in hand-event evidence (`camera_moving_frames`).
+
+### Results (held-out half, scored once)
+
+`standing_transition`, 95 % Wilson intervals in brackets:
+
+| Rules | Split | Recall | Precision | False positives | Confused with sitting down | Recall when legs observable |
+|---|---|---|---|---|---|---|
+| v0.2 (`mask_camera_motion: false`) | holdout | 0.40 (4/10) [0.17–0.69] | 0.40 (4/10) [0.17–0.69] | 6 | 0 | 0.50 (4/8) |
+| **v0.2 + camera motion** | **holdout** | **0.30 (3/10)** [0.11–0.60] | **0.50 (3/6)** [0.19–0.81] | **3** | 0 | 0.43 (3/7) |
+| v0.2 | all | 0.26 (5/19) [0.12–0.49] | 0.42 (5/12) [0.19–0.68] | 7 | 0 | 0.42 (5/12) |
+| v0.2 + camera motion | all | 0.21 (4/19) [0.09–0.43] | 0.50 (4/8) [0.22–0.78] | 4 | 0 | 0.36 (4/11) |
+
+The v0.2 rows reproduce the earlier tables exactly from the new caches (pose landmarks are unchanged; only motion data was added).
+
+`hand_raised` (UCF101) is unchanged by construction: holdout TP/FP/FN/TN 5/3/1/9, all 10/3/6/21.
+
+**Per-frame posture** (production `posture_features`, Charades activity labels from `eval_charades_frames`: seated = sitting at a table, in a chair or on a sofa; standing = doors, doorways, light switches; frames inside stand-up/sit-down windows excluded). Balanced accuracy, with the share of observed seated/standing frames given the *opposite* label in brackets:
+
+| Rules | Tune | Holdout |
+|---|---|---|
+| v0.2 | 0.664 (8.5 % / 12.3 %), 515 + 122 frames | 0.783 (0.8 % / 13.3 %), 363 + 278 frames |
+| v0.2 + camera motion | 0.680 (8.8 % / 10.7 %), 502 + 103 frames | **0.801** (0.8 % / 9.8 %), 356 + 234 frames |
+
+These standing labels use a slightly different activity set from the original v0.2 table above, so the v0.2 row here differs from 0.64 / 0.79; the comparison within this table is paired. On the holdout, frames with camera translation above 0.2 /s are misclassified **35.5 %** of the time against 5.6 % otherwise (31 of 552 observed frames), which is the mechanism the masking targets.
+
+### What changed, clip by clip (holdout)
+
+| Clip | v0.2 | With camera motion | What the frames show |
+|---|---|---|---|
+| HIOY0 20.4 s | false positive | **suppressed** | The camera points at the floor and a cushion; MediaPipe reports a "seated" pose with no person in view. The camera then pans back to the standing person. |
+| HIOY0 33.4 s | false positive | **suppressed** | Same pattern with a TV cabinet, then a pan back to the person. |
+| 9HGNV 9.2 s | false positive | **suppressed** | A person walks while carrying bedding; the camera follows and zooms. Legs are hidden under the bedding and read as "seated" while the camera moves. |
+| HIOY0 14.2 s | true positive | **lost** | A real stand-up from a chair, filmed by a handheld camera that follows the person (59 % of the clip's frames have a moving camera). |
+
+**HIOY0 outcome:** both pan-induced false positives are gone, and so is the clip's one correct detection. HIOY0 now yields no suggestion at all. Camera motion explains *when* posture cannot be trusted; it cannot tell a pan from a camera following a real stand-up. With the camera moving, posture there is reported as unobservable, which is the PRD's rule for missing evidence.
+
+Net on the held-out half: false positives halve (6 → 3) for one lost stand-up (4 → 3). Precision rises from 0.40 to 0.50 and recall falls from 0.40 to 0.30. Both changes sit well inside the confidence intervals; this is directional evidence from 10 held-out stand-ups, not a conclusive improvement.
+
+### Post-hoc sensitivity (holdout, *not* a selection)
+
+| Translation /s | Rotation °/s | Scale /s | Pad | Holdout hits / detections | Frames masked |
+|---|---|---|---|---|---|
+| off | off | off | – | 4 / 10 | 0 % |
+| **0.2** | **10** | **0.1** | **0** | **3 / 6** | **9.3 %** |
+| 0.2 | 10 | 0.1 | 1 | 4 / 6 | 15.9 % |
+| 0.2 | off | off | 0 | 4 / 7 | 6.4 % |
+| 0.5 | off | off | 0 | 4 / 8 | 1.0 % |
+| 0.3 | 10 | 0.1 | 0 | 3 / 6 | 7.3 % |
+
+A one-frame pad would have kept the HIOY0 stand-up on the holdout, but it lost the tune split's only stand-up, so it was not selected. Choosing it now would be tuning on the held-out half (LEARNINGS M19). More annotated footage with moving cameras is needed to settle the pad.
+
+### Limitations
+
+- **A camera that follows a real stand-up hides it.** Masking cannot separate "camera moved, scene changed" from "camera tracked the person". Posture angles are fairly robust to small pans, so a gentler rule (for example, only masking when the cumulative shift between the seated and standing evidence is large) might keep such stand-ups, but HIOY0's true stand-up had a cumulative camera shift between the last seated and first standing frame (0.43 frame widths, summed over reliable estimates) as large as its false ones (0.33 and 0.64), and the tune split has no camera-induced false positive to select such a rule on.
+- **Masking removes evidence only while the camera moves.** A still seated view, a short pan, then a still standing view of something else can still form a transition (`test_stand_up_seen_after_a_pan_still_counts`). Hallucinated poses on empty scenery (HIOY0) are a pose-quality problem that camera motion only catches when the camera is moving.
+- **Large foreground objects or people** that are not the detected person can dominate the background fit; RANSAC and the inlier-ratio gate reduce, but do not remove, this. A second person is handled by the separate multi-person work.
+- **Slow drift** below 0.2 frame/s is treated as static. Rotation and scale estimates from a few features are noisy (the 10 °/s rotation threshold sits well above the 95th percentile of 3–4 °/s on observed Charades posture frames).
+- Samples remain small: 10 held-out stand-ups, 3 camera-related false positives.
+
 ## What we learned (and what changed)
 
 1. **Thresholds tuned on synthetic data don't transfer.** Real seated people seen from elevated home cameras have hip-to-knee drops of 0.3–0.55 torso lengths (median 0.39). v0.1's "≤ 0.35" caught fewer than half of real seated frames. → v0.2 adds **hip angle** (≤ 140° seated, ≥ 150° standing) and **knee angle** (≤ 130° seated, when ankles are visible). The drop cue is kept for front-on camera setups.
@@ -150,4 +238,5 @@ Caveats as above: 19 stand-up windows and 40 action clips, home and sports foota
 
 - Record staged clips in the intended setting (front-on camera, full body visible) using the README procedure, and add them to `data/validation/` with a ground-truth CSV.
 - ~~Try `pose_landmarker_full`/`heavy` and 10 fps.~~ Done (see *Pose model comparison*): neither larger model helps with the current thresholds, and 10 fps doesn't help `hand_raised`. Re-tuning the temporal parameters for 10 fps on the tune split is the remaining lead.
-- Add person tracking (multi-person) and camera-motion detection to suppress the two main remaining false-positive sources.
+- ~~Add camera-motion detection.~~ Done (see *Camera motion*): it removes the pan false positives, at the cost of stand-ups filmed by a following camera. More annotated moving-camera footage is needed to tune the padding.
+- Add person tracking (multi-person) to suppress the remaining second-person false positive.

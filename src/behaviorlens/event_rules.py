@@ -15,6 +15,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from .camera_motion import MOVING, camera_motion_state
 from .config import ALGORITHM_VERSION, RuleParams
 from .features import (
     SEATED,
@@ -67,12 +68,19 @@ def _ratio(values: np.ndarray) -> float:
     return round(float(np.mean(values)), 3) if values.size else 0.0
 
 
+def _camera_evidence(cam: np.ndarray | None, first: int, last: int) -> int | None:
+    """MOVING camera frames in [first, last], or None when motion was not estimated."""
+    return None if cam is None else int(np.sum(cam[first: last + 1] == MOVING))
+
+
 def detect_hand_raised(seq: PoseSequence, params: RuleParams, session_id: str) -> list[Event]:
     """`hand_raised`: wrist above same-side shoulder for >= hand_raise_min_s.
 
-    Both hands raised together form one contiguous event with side "both".
+    Both hands raised together form one contiguous event with side "both". Camera motion
+    is reported in the evidence but does not mask this within-frame cue.
     """
     feats = hand_raise_features(seq, params)
+    cam = camera_motion_state(seq, params) if seq.camera_motion is not None else None
     combined = feats.combined
     events = []
     for seg in find_segments(combined == TRUE, seq.timestamps_s, params.merge_gap_s):
@@ -95,6 +103,7 @@ def detect_hand_raised(seq: PoseSequence, params: RuleParams, session_id: str) -
             "raised_frame_ratio": _ratio(combined[sl] == TRUE),
             "visible_frame_ratio": _ratio(side_visible),
             "median_wrist_height_head_units": round(float(np.nanmedian(margins)), 3) if margins.size else None,
+            "camera_moving_frames": _camera_evidence(cam, seg.first, seg.last),
             "params": {
                 "visibility_threshold": params.visibility_threshold,
                 "hand_raise_min_height": params.hand_raise_min_height,
@@ -123,6 +132,7 @@ def detect_standing(seq: PoseSequence, params: RuleParams, session_id: str) -> l
     supply either side of the evidence.
     """
     feats = posture_features(seq, params)
+    cam = camera_motion_state(seq, params) if seq.camera_motion is not None else None
     seated = _stable_runs(feats.state, SEATED, seq, params)
     standing = _stable_runs(feats.state, STANDING, seq, params)
     times = seq.timestamps_s
@@ -150,6 +160,9 @@ def detect_standing(seq: PoseSequence, params: RuleParams, session_id: str) -> l
             "standing_after_s": round(float(times[b.last] - times[first_up]) + seq.frame_period_s, 3),
             "transition_gap_s": round(float(gap), 3),
             "unobservable_frames_in_transition": int(np.sum(between == UNKNOWN)),
+            # Frames of the seated run, transition and standing run with a moving camera
+            # (posture there is already unobservable); None if motion was not estimated.
+            "camera_moving_frames": _camera_evidence(cam, a.first, b.last),
             "median_hip_knee_drop_before": _nanmedian(feats.hip_knee_drop[a.first: a.last + 1]),
             "median_hip_knee_drop_after": _nanmedian(feats.hip_knee_drop[first_up: b.last + 1]),
             "median_hip_angle_before_deg": _nanmedian(feats.hip_angle_deg[a.first: a.last + 1]),
@@ -164,6 +177,10 @@ def detect_standing(seq: PoseSequence, params: RuleParams, session_id: str) -> l
                 "dwell_s": params.dwell_s,
                 "posture_merge_gap_s": params.posture_merge_gap_s,
                 "max_transition_s": params.max_transition_s,
+                "mask_camera_motion": params.mask_camera_motion,
+                "camera_max_translation_per_s": params.camera_max_translation_per_s,
+                "camera_max_rotation_deg_per_s": params.camera_max_rotation_deg_per_s,
+                "camera_max_scale_change_per_s": params.camera_max_scale_change_per_s,
             },
         }
         events.append(_event(session_id, "standing_transition", start, end, evidence, seq))
@@ -179,6 +196,7 @@ def detect_standing(seq: PoseSequence, params: RuleParams, session_id: str) -> l
                 "standing_frame_ratio": _ratio(feats.state[sl] == STANDING),
                 "visible_frame_ratio": _ratio(feats.state[sl] != UNKNOWN),
                 "median_hip_knee_drop": _nanmedian(feats.hip_knee_drop[sl]),
+                "camera_moving_frames": _camera_evidence(cam, r.first, r.last),
                 "params": {
                     "sustained_standing_min_s": params.sustained_standing_min_s,
                     "standing_min_drop": params.standing_min_drop,

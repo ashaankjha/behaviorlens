@@ -73,3 +73,22 @@ def test_ground_truth_metrics_only_when_ground_truth_exists(app, store):
     assert not app.exception
     assert any("No ground truth supplied" in c.value for c in app.caption)
     assert not any("Algorithm proposals" in m.value for m in app.markdown)
+
+
+def test_camera_motion_lane_and_details(app, store):
+    """Camera motion is shown as a timeline lane and summarized in Analysis details."""
+    from behaviorlens.models import Event
+
+    sid = store.create_session(source_filename="pan.mp4", checksum="y", data_mode="video_inference",
+                               meta={"duration_s": 10, "fps": 30})
+    stats = {"camera_motion_available": True, "camera_moving_ratio": 0.25, "camera_motion_unknown_ratio": 0.05,
+             "camera_motion_intervals": [[2.0, 4.4]]}
+    warning = "The camera moved (pan, tilt, zoom or shake) in 25% of sampled frames."
+    aid = store.add_analysis(sid, settings={}, stats=stats, warnings=[warning], model_version="fake@1",
+                             data_mode="video_inference")
+    store.save_suggestions(sid, aid, [Event(session_id=sid, event_type="hand_raised", start_s=5.0, end_s=6.0)])
+    app.run()
+    app.selectbox(key="session_select").set_value(sid).run()
+    assert not app.exception
+    assert any(w.value == warning for w in app.warning)
+    assert any("Camera motion: moving in 25%" in c.value for c in app.caption)

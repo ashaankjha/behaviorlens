@@ -17,6 +17,7 @@ import cv2
 import numpy as np
 
 from . import config, demo_generator
+from .camera_motion import CAMERA_MOTION_VERSION, CameraMotionEstimator, camera_motion_stats
 from .config import AnalysisSettings, RuleParams
 from .event_rules import detect_all, observability_stats
 from .models import NUM_LANDMARKS, VISIBILITY, X, Y, AnalysisResult, PoseSequence, VideoMeta, new_id
@@ -45,6 +46,7 @@ def _noop(_: float, __: str) -> None:
 # ---------------------------------------------------------------- analysis
 def analyze_pose(seq: PoseSequence, params: RuleParams, session_id: str) -> AnalysisResult:
     stats = observability_stats(seq, params)
+    stats.update(camera_motion_stats(seq, params))
     warnings: list[str] = []
     if len(seq) == 0 or stats["pose_detected_ratio"] == 0:
         warnings.append("No person was detected in any sampled frame, so no events could be suggested.")
@@ -54,6 +56,11 @@ def analyze_pose(seq: PoseSequence, params: RuleParams, session_id: str) -> Anal
         warnings.append(
             f"More than one person was detected in {stats['multi_person_frame_ratio']:.0%} of frames. "
             "Events are attributed to the largest detected person; attribution is not reliable."
+        )
+    if stats.get("camera_moving_ratio"):
+        warnings.append(
+            f"The camera moved (pan, tilt, zoom or shake) in {stats['camera_moving_ratio']:.0%} of sampled frames. "
+            "Posture is treated as unobservable there, because landmark positions mix camera and body movement."
         )
     if 0 < len(seq) and stats["posture_rule_observable_ratio"] < 0.5:
         warnings.append(
@@ -66,12 +73,16 @@ def analyze_pose(seq: PoseSequence, params: RuleParams, session_id: str) -> Anal
 
 
 def extract_pose(video_path: Path, meta: VideoMeta, estimator: PoseEstimator, sample_fps: float,
-                 progress: Progress = _noop) -> tuple[PoseSequence, list[str]]:
+                 progress: Progress = _noop, camera_motion: bool = True) -> tuple[PoseSequence, list[str]]:
+    """Pose landmarks (and, by default, camera motion) for each sampled frame."""
     warnings: list[str] = []
-    times, indices, rows, people = [], [], [], []
+    times, indices, rows, people, motion = [], [], [], [], []
+    motion_est = CameraMotionEstimator() if camera_motion else None
     total = max(1, int(meta.duration_s * min(sample_fps, meta.fps)))
     for k, (frame_idx, t, frame) in enumerate(iter_sampled_frames(video_path, meta, sample_fps, warnings)):
         lms, n = estimator.detect(frame, t)
+        if motion_est is not None:
+            motion.append(motion_est.update(frame, lms))
         times.append(t)
         indices.append(frame_idx)
         rows.append(lms if lms is not None else np.full((NUM_LANDMARKS, 5), np.nan))
@@ -84,6 +95,7 @@ def extract_pose(video_path: Path, meta: VideoMeta, estimator: PoseEstimator, sa
         timestamps_s=np.array(times), frame_indices=np.array(indices), landmarks=np.stack(rows),
         sample_fps=min(sample_fps, meta.fps), duration_s=meta.duration_s,
         num_people=np.array(people), data_mode="video_inference",
+        camera_motion=np.stack(motion) if motion else None,
     )
     return seq, warnings
 
@@ -145,7 +157,8 @@ def create_demo_session(store: Store) -> str:
 
 def _pose_cache_path(store: Store, checksum: str, model_version: str, sample_fps: float) -> Path:
     safe_model = model_version.replace("@", "_").replace("/", "_")
-    return store.cache_dir() / f"{checksum}_{safe_model}_{sample_fps:g}fps.npz"
+    # The camera-motion version is part of the key: older caches lack motion data.
+    return store.cache_dir() / f"{checksum}_{safe_model}_{sample_fps:g}fps_{CAMERA_MOTION_VERSION}.npz"
 
 
 def run_analysis(store: Store, session_id: str, settings: AnalysisSettings | None = None,
