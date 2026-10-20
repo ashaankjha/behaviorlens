@@ -30,7 +30,7 @@ BehaviorLens has **no** regulatory clearance, approval, CE marking or certificat
 | [clinical_validation_plan.md](clinical_validation_plan.md) | Clinical performance study **proposal** (not executed): design, reference standard, endpoints, sample size, acceptance placeholders |
 | [cybersecurity.md](cybersecurity.md) | Threat model, STRIDE analysis, network exposure, encryption-at-rest guidance, SBOM and vulnerability and patch process |
 
-Related engineering records outside this folder: [PRD](../PRD.md), [PRD traceability](../PRD_TRACEABILITY.md), [real-video validation](../VALIDATION.md), [clean-room audit](../AUDIT.md) and the [learnings log](../LEARNINGS.md).
+Related engineering records outside this folder: [PRD](../PRD.md), [PRD traceability](../PRD_TRACEABILITY.md), [real-video validation](../VALIDATION.md), the [staged-recording kit](../recording_kit/README.md) for Phase A of the clinical validation plan, the [clean-room audit](../AUDIT.md) and the [learnings log](../LEARNINGS.md).
 
 ## What exists today (engineering evidence)
 

@@ -49,7 +49,7 @@ Key limitations: tiny samples; non-clinical settings; no blinded expert referenc
 ## 4. Study design
 
 - **Type:** prospective, non-interventional diagnostic-accuracy-style study with blinded reference annotation. The design is structured after STARD reporting principles. Results do not influence care.
-- **Phase A, staged recordings (first):** adult volunteers (≥18 years) act out scripted sequences that include target movements, near-miss distractors (arms at shoulder height, sitting down, lunges, partial standing) and pre-specified challenge conditions (occlusion by furniture, a second person entering, lighting changes). Phase A tests the camera protocol and analysis pipeline, and locks the algorithm.
+- **Phase A, staged recordings (first):** adult volunteers (≥18 years) act out scripted sequences that include target movements, near-miss distractors (arms at shoulder height, sitting down, lunges, partial standing) and pre-specified challenge conditions (occlusion by furniture, a second person entering, lighting changes). Phase A tests the camera protocol and analysis pipeline, and locks the algorithm. A draft **staged-recording kit** for Phase A is in [`docs/recording_kit/`](../recording_kit/README.md): room and camera protocol, a numbered script of takes with target counts, a consent **template** that still needs ethics or legal review, an annotation guide with the operational definitions below, and `scripts/ingest_staged_recordings.py`, which validates recordings and double annotations, computes inter-rater agreement (§7), strips audio and metadata, assigns opaque IDs and writes the tune/holdout dataset. The kit has not been used to record anyone yet; Phase A data from it are engineering data, not clinical evidence.
 - **Phase B, clinical recordings (later, separately approved):** recordings from real ABA sessions under the same camera protocol, only after Phase A acceptance criteria are met and the regulatory strategy is set.
 - **Ethics:** IRB or ethics committee approval before each phase. Written informed consent covering recording, local processing, annotation, retention and the right to withdraw. **No minors** unless a separate protocol with parental consent, child assent and specific ethics approval is approved. Phase B data counts as health data, subject to HIPAA/GDPR assessment (see [cybersecurity.md](cybersecurity.md)).
 - **Sites:** at least two sites (staged lab plus clinic) to reduce single-room bias. Each site must have a data-protection plan before enrolment.
@@ -73,7 +73,7 @@ Key limitations: tiny samples; non-clinical settings; no blinded expert referenc
   - *Hand raised:* at least one wrist above the same-side shoulder by clearly more than shoulder-to-chin distance, sustained ≥0.6 s. Onset and offset are marked to 0.1 s.
   - *Standing transition:* a change from a seated position (weight on a seat surface) to standing upright with weight on the feet. Onset is when the buttocks leave the seat; offset is when upright stance is reached.
   - Each event also gets an *observability* flag: the annotator records whether the relevant body parts were visible.
-- **Tool:** annotation with a neutral tool (not BehaviorLens) to avoid anchoring.
+- **Tool:** annotation with a neutral tool (not BehaviorLens) to avoid anchoring. For Phase A, the kit accepts ELAN `.eaf` files or a per-clip CSV ([annotation_guide.md](../recording_kit/annotation_guide.md)).
 - **Adjudication:** a third BCBA, blinded to BehaviorLens output, resolves disagreements: events marked by only one annotator, or matched events whose onsets differ by more than the tolerance. The adjudicated set is the reference standard.
 
 ## 7. Inter-rater reliability
@@ -82,6 +82,7 @@ Key limitations: tiny samples; non-clinical settings; no blinded expert referenc
 - **Frame level:** Cohen's kappa on per-second state labels (seated/standing/other; raised/not).
 - **Target:** IOA ≥ 0.80 and kappa ≥ 0.80 per event type, measured on a pilot of ≥10% of recordings before main annotation. Below target, definitions are refined and annotators retrained, and the pilot clips are re-annotated. The pilot clips are not used to tune the algorithm.
 - Report raw (pre-adjudication) agreement in all cases.
+- Phase A implementation: `scripts/ingest_staged_recordings.py` reports, per label, event agreement (one-to-one IoU matching), Cohen's kappa on 1 s bins, and interval-by-interval and count-per-interval IOA on 10 s intervals. It lists unmatched events for adjudication, and `--strict` refuses a dataset with unadjudicated disagreements. Before Phase A, the plan's adjudication rule (onset tolerance) and the kit's (IoU ≥ 0.5, union of matched pairs) must be reconciled and one locked.
 
 ## 8. Endpoints
 
@@ -146,7 +147,7 @@ If a criterion fails, the outcome is reported as a failure. Thresholds or defini
 The same tune/holdout discipline as [VALIDATION.md](../VALIDATION.md) and LEARNINGS M19 applies:
 
 1. Before any study data are analysed, **freeze** `config.ALGORITHM_VERSION`, every `RuleParams` default, the sampling rate, `config.MODEL_SHA256` / `model_version`, and the pinned `constraints.txt`. Record the git commit and a container image digest in the statistical analysis plan (SAP).
-2. Phase A may set aside a deterministic **tune split** (hashed by participant, not clip, to avoid leakage) for one round of threshold selection. The **evaluation split** stays sealed until the lock in step 1, and is scored exactly once.
+2. Phase A may set aside a deterministic **tune split** (hashed by participant, not clip, to avoid leakage; the staged-recording kit keeps each clip's participant code in a local `manifest.json` for this, but the existing real-video evaluator (`validate_real_video.split_of`) hashes the clip ID, so participant-level splitting is an open item) for one round of threshold selection. The **evaluation split** stays sealed until the lock in step 1, and is scored exactly once.
 3. Disable the UI threshold sliders for the study build, or verify each analysis's stored `settings` against the locked values ([risk_management.md](risk_management.md) H-06).
 4. Any change after unblinding produces a new algorithm version that needs a new evaluation set.
 5. An independent analyst runs the locked scoring script, and its output is archived with the data.

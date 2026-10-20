@@ -90,6 +90,8 @@ The synthetic demo bypasses inference. To check real pose extraction end to end:
 4. Write the true times to a CSV with columns `event_type,start_s,end_s` and upload it under **Analysis details → Agreement with ground truth**. You'll see precision and recall with a configurable time tolerance.
 5. Delete the session when you're done. Don't commit the clip.
 
+To build a proper validation set in the intended setting (a table-work room, fixed camera, scripted takes by consenting adult volunteers, double annotation), use the [staged-recording kit](docs/recording_kit/README.md).
+
 ### Real-video validation
 
 ```bash
