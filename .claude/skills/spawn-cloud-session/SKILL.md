@@ -27,6 +27,11 @@ The project owner wants parallel cloud sessions spawned **whenever necessary**. 
    - the method, plus what *not* to change (for example "don't retune thresholds");
    - the deliverable file and section;
    - constraints: never commit `data/`, weights or footage of people; push only its branch; no PR; log lessons per `update-learnings`;
+   - **collision avoidance when several children run at once**:
+     - Reserve a distinct LEARNINGS M-number range per child (for example M26–M29, M30–M33).
+     - Give each child its own new module, and keep edits to shared files minimal and additive.
+     - Tell children *not* to bump `ALGORITHM_VERSION`; the parent sets it at integration.
+     - Re-run the combined validation after merging, because features interact.
    - "Work autonomously; don't ask questions. End with a concise summary."
 3. Arm a check-in with `send_later` (about 45 min for an audit or experiment). Children don't report back when they finish cleanly.
 
