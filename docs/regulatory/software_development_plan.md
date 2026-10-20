@@ -9,7 +9,7 @@
 | Date | 2026-10-20 |
 | Status | Draft |
 | Owner | TBD (manufacturer) |
-| Applies to | BehaviorLens `0.1.0`, `rules-v0.2`, schema version 2 (`storage.SCHEMA_VERSION`) |
+| Applies to | BehaviorLens `0.1.0`, `rules-v0.3`, schema version 2 (`storage.SCHEMA_VERSION`) |
 
 Related documents: [Intended use](intended_use.md) · [Software requirements](software_requirements.md) · [Architecture](architecture.md) · [SOUP list](soup_list.md) · [Risk management](risk_management.md) · [Verification report](verification_report.md) · [Cybersecurity](cybersecurity.md) · [Clinical validation plan](clinical_validation_plan.md)
 
@@ -111,7 +111,7 @@ Class B adds, relative to A: documented architecture with SOUP identification, d
 |---|---|
 | Source, docs, tests, scripts | git. Child sessions work on `audit/`, `experiment/` or `feature/` branches and never push to `main`; the parent session reviews, tests and merges. |
 | Python dependencies | `requirements.txt` (lower bounds), `requirements-dev.txt`, and `constraints.txt` with **exact** tested versions (installed with `-c constraints.txt` by README, CI, Dockerfile and SessionStart hook). |
-| Algorithm | `config.ALGORITHM_VERSION` (`rules-v0.2`), bumped when thresholds change (validate-real-video skill step 6); stored on every event and analysis. |
+| Algorithm | `config.ALGORITHM_VERSION` (`rules-v0.3`), bumped when thresholds change (validate-real-video skill step 6); stored on every event and analysis. |
 | Rule parameters | Full `RuleParams` stored as `settings_json` on every analysis and exported. |
 | Pose model | Versioned URL (`…/float16/1/…`) plus pinned `config.MODEL_SHA256`; download fails on mismatch (`pose.download_model`, `test_model_download_verifies_checksum`); a default-path model is re-verified at load (`test_tampered_default_model_is_refused`); `model_version = name@sha256[:12]` stored per analysis. |
 | Database schema | `schema_version` table and ordered, append-only `storage.MIGRATIONS`; backup before upgrade; databases from newer releases are refused (`test_database_from_newer_release_is_refused`). |

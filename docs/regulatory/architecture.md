@@ -9,7 +9,7 @@
 | Date | 2026-10-20 |
 | Status | Draft |
 | Owner | TBD (manufacturer) |
-| Applies to | BehaviorLens `0.1.0`, `rules-v0.2`, schema version 2 |
+| Applies to | BehaviorLens `0.1.0`, `rules-v0.3`, schema version 2 |
 
 Related documents: [Intended use](intended_use.md) · [Software development plan](software_development_plan.md) · [Software requirements](software_requirements.md) · [SOUP list](soup_list.md) · [Risk management](risk_management.md) · [Cybersecurity](cybersecurity.md) · [Verification report](verification_report.md)
 

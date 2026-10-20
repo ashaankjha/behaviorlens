@@ -9,7 +9,7 @@
 | Date | 2026-10-20 |
 | Status | Draft |
 | Owner | TBD (manufacturer) |
-| Applies to | BehaviorLens `0.1.0` (`pyproject.toml`), rules `rules-v0.2` (`config.ALGORITHM_VERSION`), pose model `pose_landmarker_lite` (SHA-256 `59929e1d…574a`, `config.MODEL_SHA256`) |
+| Applies to | BehaviorLens `0.1.0` (`pyproject.toml`), rules `rules-v0.3` (`config.ALGORITHM_VERSION`), pose model `pose_landmarker_lite` (SHA-256 `59929e1d…574a`, `config.MODEL_SHA256`) |
 
 Related documents: [README](README.md) · [Software development plan](software_development_plan.md) · [Software requirements](software_requirements.md) · [Architecture](architecture.md) · [Risk management](risk_management.md) · [Clinical validation plan](clinical_validation_plan.md) · [Verification report](verification_report.md) · [Cybersecurity](cybersecurity.md) · [SOUP list](soup_list.md)
 
@@ -92,18 +92,18 @@ Do not use BehaviorLens:
 
 ## 6. Known limitations (from real-video evaluation)
 
-All figures come from [VALIDATION.md](../VALIDATION.md) (run date 2026-10-18, `pose_landmarker_lite`, 5 fps, rules-v0.2). The datasets are small public research samples, so every number below has wide uncertainty.
+All figures come from [VALIDATION.md](../VALIDATION.md) (`pose_landmarker_lite`, 5 fps). §6.1 reports the shipped **rules-v0.3** (2026-10-20) and rules-v0.2 (2026-10-18) for comparison. The datasets are small public research samples, so every number below has wide uncertainty.
 
 ### 6.1 `standing_transition` performance is modest
 
-| Measure (Charades, event level) | Held-out half | All clips |
-|---|---|---|
-| Recall | **0.40 (4/10)**, 95% Wilson [0.17–0.69] | 0.26 (5/19), [0.12–0.49] |
-| Precision | **0.40 (4/10)**, [0.17–0.69] | 0.42 (5/12), [0.19–0.68]; 0.50 (6/12) after visual review by the rule author |
-| Recall when legs observable (posture observable in ≥ 30% of frames) | 0.50 (4/8) | 0.42 (5/12) |
-| Confused with sitting down | 0 | 0 |
+| Measure (Charades, event level) | Held-out half, **rules-v0.3** | Held-out half, rules-v0.2 | All clips, rules-v0.3 |
+|---|---|---|---|
+| Recall | **0.20 (2/10)**, 95% Wilson [0.06–0.51] | 0.40 (4/10), [0.17–0.69] | 0.16 (3/19) |
+| Precision | **0.40 (2/5)**, [0.12–0.77] | 0.40 (4/10), [0.17–0.69] | 0.50 (3/6) |
+| False positives | **3** | 6 | 3 |
+| Confused with sitting down | 0 | 0 | 0 |
 
-Per-frame posture balanced accuracy on held-out frames is 0.79. The improvement over rules-v0.1 (held-out recall 0.20, precision 0.50) is **not statistically conclusive** at this sample size.
+Per-frame posture balanced accuracy on held-out frames is 0.78 (rules-v0.3) and 0.78 (rules-v0.2). rules-v0.3 trades raw recall for removing identity-switch artifacts (one v0.2 "hit" came from a phantom pose; one v0.2 false positive mixed two people). **None of these differences is statistically conclusive** at this sample size.
 
 ### 6.2 `hand_raised` performance
 
@@ -121,8 +121,8 @@ When hips or knees are not visible (furniture, desks, blankets, out of frame), p
 
 | Condition | Effect |
 |---|---|
-| **Camera pans / handheld camera** | Produced 2 of the standing false positives. There is no camera-motion detection. |
-| **Second person / multi-person scenes** | Events are attributed to the largest detected person (`pose.select_primary`). Attribution can switch between people; one false positive came from a second person. The app warns when more than one person is detected, but does not track identities. |
+| **Camera pans / handheld camera** | Produced 2 of the rules-v0.2 standing false positives. rules-v0.3 estimates camera motion and shows it on the timeline and in warnings; masking moving-camera frames is optional and **off by default**. A camera that follows a real stand-up can hide it when masking is on. Use a fixed camera. |
+| **Second person / multi-person scenes** | rules-v0.3 tracks up to 4 people by geometry (no recognition) and computes events for one subject track, which the reviewer can change. Camera pans can split one person into two tracks; phantom poses on furniture and clothing are common; someone out of view for > 2 s gets a new track. |
 | **Partial-body framing / close-ups** | Jitter on partially framed standing people produced 3 false positives; torso-only shots can yield hallucinated landmarks. |
 | **Side-view cameras** | The hip-to-knee drop cue assumes a roughly frontal view. Side-view behavior has not been evaluated. |
 | **Non-ABA footage** | Validation used home (Charades) and sports (UCF101) video, not ABA session rooms. Camera placement, furniture and participants differ. |

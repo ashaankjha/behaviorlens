@@ -9,7 +9,7 @@
 | Date | 2026-10-20 |
 | Status | Draft |
 | Owner | TBD (manufacturer) |
-| Software | BehaviorLens, `ALGORITHM_VERSION = rules-v0.2`, schema version 2, model `pose_landmarker_lite@59929e1d1ee9` |
+| Software | BehaviorLens, `ALGORITHM_VERSION = rules-v0.3`, schema version 2, model `pose_landmarker_lite@59929e1d1ee9` |
 | Environment | Python 3.11.17, Linux (cloud container), dependencies exactly as `constraints.txt` |
 
 This report records **what is verified, by which mechanism, and the results observed on 2026-10-20**. Software verification shows that the code does what its requirements say. It is **not clinical validation**: nothing here shows that the suggestions are accurate enough for any clinical purpose (see [clinical_validation_plan.md](clinical_validation_plan.md), which is a proposal and has not been executed). Requirement IDs refer to [software_requirements.md](software_requirements.md); hazard IDs refer to [risk_management.md](risk_management.md).
@@ -19,13 +19,13 @@ This report records **what is verified, by which mechanism, and the results obse
 | Activity | Tool / command | Gate | Result (2026-10-20) |
 |---|---|---|---|
 | Lint | `ruff check .` (ruff 0.17.1; rules E, F, W, B) | zero findings | **Pass**: "All checks passed!" |
-| Static typing | `mypy` (mypy 2.4.0, `strict = true`, pydantic plugin, `src/behaviorlens`) | zero errors | **Pass**: "no issues found in 13 source files". Only `mediapipe` and `imageio_ffmpeg` (no published stubs) use `ignore_missing_imports`; there are no `# type: ignore` comments in `src/` except one `attr-defined` marker on a logging handler attribute. |
-| Unit, integration and UI tests | `python -m pytest -q --cov` | all pass | **Pass**: 124 passed, 0 skipped, 0 failed (~10 s). |
-| Coverage | pytest-cov 7.1.0 / coverage 7.16.2, line + branch over `src/behaviorlens` | `fail_under = 91` | **Pass**: 91.57 %. The floor is the measured value rounded down. |
-| Dependency vulnerabilities | `pip-audit -r constraints.txt --no-deps --disable-pip` (pip-audit 2.10.1) | zero known vulnerabilities | **Pass**: "No known vulnerabilities found" (88 pinned components). See [soup_list.md](soup_list.md). |
+| Static typing | `mypy` (mypy 2.4.0, `strict = true`, pydantic plugin, `src/behaviorlens`) | zero errors | **Pass**: "no issues found in 15 source files" (re-run 2026-10-20 after the rules-v0.3 integration). Only `mediapipe` and `imageio_ffmpeg` (no published stubs) use `ignore_missing_imports`; there are no `# type: ignore` comments in `src/` except one `attr-defined` marker on a logging handler attribute. |
+| Unit, integration and UI tests | `python -m pytest -q --cov` | all pass | **Pass**: 176 passed, 0 skipped, 0 failed (~18 s with coverage; re-run 2026-10-20 after the rules-v0.3 integration). |
+| Coverage | pytest-cov 7.1.0 / coverage 7.16.2, line + branch over `src/behaviorlens` | `fail_under = 91` | **Pass**: 91.98 % after the rules-v0.3 integration (91.57 % when the floor was set; the floor is that value rounded down). |
+| Dependency vulnerabilities | `pip-audit -r constraints.txt --no-deps --disable-pip` (pip-audit 2.10.1) | zero known vulnerabilities | **Pass**: "No known vulnerabilities found" (88 pinned components; re-run 2026-10-20). See [soup_list.md](soup_list.md). |
 | Browser end-to-end | `e2e-verify-streamlit` skill (Playwright + headless Chromium against a live `streamlit run` on a scratch data dir) | all 6 checks pass | **Pass**: `timeline_has_bars` (9), `bar_click_selects_event`, `thumbnails_shown` (2), `video_plays_and_seeks` (readyState 4, seek to 4.0 s), `export_reflects_review`, `no_streamlit_exceptions` (0). The one console "Video source error" is the expected H.264 load in Chromium (LEARNINGS §2). The server log contained only JSON log lines with IDs and counts. |
 | Container build and smoke test | CI job `docker` in `.github/workflows/ci.yml` | image builds; health endpoint answers on `127.0.0.1`; non-root UID; pinned model verifies; no traceback in logs | **Not run locally**: the Docker daemon is not available in the authoring environment. The job runs on GitHub-hosted runners on every push. The Dockerfile's privacy and least-privilege settings are asserted statically by `test_dockerfile_keeps_privacy_and_least_privilege_settings`. |
-| Real-video performance | `scripts/validate_real_video.py` (tune/holdout protocol) | n/a (measurement, not a gate) | **Not re-run**: this change set doesn't touch rules, thresholds, features or the model (`ALGORITHM_VERSION` unchanged). The latest figures are in [VALIDATION.md](../VALIDATION.md): held-out `standing_transition` recall 0.40 and precision 0.40 (n = 10, 95 % CI 0.17–0.69). |
+| Real-video performance | `scripts/validate_real_video.py` (tune/holdout protocol, pre-registered selection) | n/a (measurement, not a gate) | **Re-run 2026-10-20 for rules-v0.3** (tracking on, camera-motion masking off by default). Held-out `standing_transition`: recall 0.20 (2/10, 95 % CI 0.06–0.51), precision 0.40 (2/5, CI 0.12–0.77), 3 false positives, against rules-v0.2's 0.40 / 0.40 / 6. `hand_raised` unchanged (holdout TP/FP/FN/TN 5/3/1/9). 166 clips processed with 0 errors. The defaults reproduce the selected configuration with no overrides. See [VALIDATION.md](../VALIDATION.md), *rules-v0.3*. |
 
 All gates except the container job and real-video validation run in CI (`.github/workflows/ci.yml`, job `test`) on every push and pull request, with the same pinned versions.
 

@@ -39,6 +39,7 @@ from conftest import make_seq
 
 W, H = 640, 480
 P = RuleParams()
+PM = RuleParams(mask_camera_motion=True)  # masking is off by default in rules-v0.3
 
 
 @pytest.fixture(scope="module")
@@ -180,9 +181,9 @@ def test_pan_with_moving_person_is_flagged_only_while_panning(world):
     moving = np.flatnonzero(state == MOVING)
     assert moving.tolist() == list(range(8, 14))
     assert np.all(state[1:8] == STATIC) and np.all(state[14:] == STATIC)
-    assert np.flatnonzero(camera_moving_mask(seq, P)).tolist() == list(range(8, 14))
+    assert np.flatnonzero(camera_moving_mask(seq, PM)).tolist() == list(range(8, 14))
     # Optional padding widens the posture mask by one sampled frame on each side.
-    padded = RuleParams(camera_motion_pad_frames=1)
+    padded = RuleParams(mask_camera_motion=True, camera_motion_pad_frames=1)
     assert np.flatnonzero(camera_moving_mask(seq, padded)).tolist() == list(range(7, 15))
     stats = camera_motion_stats(seq, P)
     assert stats["camera_motion_available"] and stats["camera_moving_ratio"] == pytest.approx(6 / 22, abs=1e-3)

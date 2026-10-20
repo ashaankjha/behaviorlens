@@ -259,6 +259,17 @@ def with_camera(seq, moving, rate: float = 0.5):
     return seq
 
 
+# rules-v0.3 ships with masking OFF by default (pre-registered selection, docs/VALIDATION.md);
+# these tests exercise the masking behaviour, so they switch it on explicitly.
+PM = RuleParams(mask_camera_motion=True)
+
+
+def test_v03_default_does_not_mask_camera_motion():
+    assert RuleParams().mask_camera_motion is False
+    seq = with_camera(pan_artifact_seq(), lambda t: t >= 3.8)
+    assert len(of_type(detect_standing(seq, P, "s"), "standing_transition")) == 1
+
+
 def pan_artifact_seq():
     """The Charades HIOY0 pattern: seated-like landmarks while the camera is still, then the
     camera pans for the rest of the clip and the landmarks read as standing during the pan."""
@@ -269,9 +280,9 @@ def test_pan_induced_transition_is_suppressed():
     no_motion = pan_artifact_seq()
     assert len(of_type(detect_standing(no_motion, P, "s"), "standing_transition")) == 1  # v0.2 behaviour
     seq = with_camera(pan_artifact_seq(), lambda t: t >= 3.8)
-    f = posture_features(seq, P)
+    f = posture_features(seq, PM)
     assert np.all(f.state[seq.timestamps_s >= 3.8] == UNKNOWN)
-    assert of_type(detect_standing(seq, P, "s"), "standing_transition") == []
+    assert of_type(detect_standing(seq, PM, "s"), "standing_transition") == []
     # The switch restores the static-camera behaviour.
     off = RuleParams(mask_camera_motion=False)
     assert len(of_type(detect_standing(seq, off, "s"), "standing_transition")) == 1
@@ -279,7 +290,7 @@ def test_pan_induced_transition_is_suppressed():
 
 def test_slow_camera_drift_does_not_mask_posture():
     seq = with_camera(make_seq(10, stand=stand_up_at(4.0, 1.2)), lambda t: True, rate=0.1)
-    events = of_type(detect_standing(seq, P, "s"), "standing_transition")
+    events = of_type(detect_standing(seq, PM, "s"), "standing_transition")
     assert len(events) == 1 and events[0].evidence["camera_moving_frames"] == 0
 
 
@@ -287,7 +298,7 @@ def test_stand_up_seen_after_a_pan_still_counts():
     # Masking removes evidence only while the camera moves: a short pan between a still
     # seated view and a still standing view leaves both runs observable (documented limit).
     seq = with_camera(make_seq(12, stand=stand_up_at(5.0, 0.4)), lambda t: 4.6 <= t < 5.6)
-    events = of_type(detect_standing(seq, P, "s"), "standing_transition")
+    events = of_type(detect_standing(seq, PM, "s"), "standing_transition")
     assert len(events) == 1
     assert events[0].evidence["camera_moving_frames"] == 5
     assert events[0].evidence["unobservable_frames_in_transition"] >= 3

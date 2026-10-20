@@ -4,6 +4,8 @@ The synthetic demo only exercises the rules. This report covers **real MediaPipe
 
 > These numbers come from small public research samples (19 annotated stand-ups and 40 action clips). They are engineering evidence about the heuristics, **not clinical validation**.
 
+> **Current shipped version: rules-v0.3** (person tracking on; camera motion estimated and shown, masking off by default). Held-out stand-up recall 0.20 (2/10), precision 0.40 (2/5), 3 false positives, against rules-v0.2's 0.40, 0.40 and 6. See *rules-v0.3: tracking + camera motion combined*. The sections below are in chronological order.
+
 ## Data
 
 | Dataset | What | Used for | Ground truth |
@@ -270,6 +272,60 @@ A one-frame pad would have kept the HIOY0 stand-up on the holdout, but it lost t
 - **Large foreground objects or people** that are not the detected person can dominate the background fit; RANSAC and the inlier-ratio gate reduce, but do not remove, this. A second person is handled by the separate multi-person work.
 - **Slow drift** below 0.2 frame/s is treated as static. Rotation and scale estimates from a few features are noisy (the 10 °/s rotation threshold sits well above the 95th percentile of 3–4 °/s on observed Charades posture frames).
 - Samples remain small: 10 held-out stand-ups, 3 camera-related false positives.
+
+## rules-v0.3: tracking + camera motion combined
+
+Run date: 2026-10-20. Person tracking and camera-motion detection were developed on separate branches, each measured against rules-v0.2 alone. This section measures them **together**, as they ship.
+
+**Integration fix found while merging.** Real videos take the multi-person path (`extract_multi_pose` → tracking → subject track). Camera motion had only been wired into the single-person `extract_pose`, so after a plain merge **motion was silently never estimated in production**, even though every test passed. It is now estimated in the multi-person frame loop, with **every** detected person excluded from the background fit, and carried onto each track (`MultiPoseSequence.camera_motion`). Regression tests: `test_multi_person_extraction_records_camera_motion_and_tracks_carry_it`, `test_run_analysis_reports_camera_motion_on_the_tracking_path`, `test_every_detected_person_is_excluded_from_the_background_fit` (LEARNINGS M38).
+
+### Pre-registered selection (written before any combined result was viewed)
+
+> Candidates: **A** v0.2 attribution, masking off (the v0.2 baseline) · **B** v0.2 attribution + camera-motion masking · **C** tracking, masking off · **D** tracking + masking. Select on the **tune** split by the highest `standing_transition` F1; ties go to fewer tune false positives, then to the simpler configuration (A < B < C < D). Score the held-out half once for the selected candidate and for A.
+
+All runs use `pose_landmarker_lite`, 5 fps, rules-v0.2 thresholds and `--tol 1.0`. B, C and D use the motion thresholds and tracking parameters their branches selected on the tune split.
+
+| Candidate | Tune recall | Tune precision | Tune F1 | Tune FP |
+|---|---|---|---|---|
+| A v0.2 | 1/9 | 1/2 | 0.182 | 1 |
+| B v0.2 + masking | 1/9 | 1/2 | 0.182 | 1 |
+| **C tracking** | 1/9 | 1/1 | **0.200** | 0 |
+| D tracking + masking | 1/9 | 1/1 | 0.200 | 0 |
+
+C and D tie exactly, because masking changes nothing on the tune half once tracking is on. The tie-break selects **C**. **rules-v0.3 = tracking on, camera motion estimated and shown but `mask_camera_motion = False` by default.** Reviewers can switch masking on per analysis.
+
+### Held-out half (scored once for C and A; B and D post-hoc)
+
+`standing_transition` (Charades), 95% Wilson intervals in brackets:
+
+| Configuration | Recall | Precision | False positives | Confused with sitting down | Per-frame posture (balanced acc.) |
+|---|---|---|---|---|---|
+| A rules-v0.2 | 0.40 (4/10) [0.17–0.69] | 0.40 (4/10) [0.17–0.69] | 6 | 0 | 0.783 |
+| **C rules-v0.3 (selected)** | **0.20 (2/10)** [0.06–0.51] | **0.40 (2/5)** [0.12–0.77] | **3** | 0 | 0.778 |
+| *B post-hoc* | 0.30 (3/10) | 0.50 (3/6) | 3 | 0 | 0.801 |
+| *D post-hoc* | 0.20 (2/10) | 0.50 (2/4) | 2 | 0 | 0.802 |
+
+All clips: A 5/19 recall, 5/12 precision · **C 3/19, 3/6** · B 4/19, 4/8 · D 3/19, 3/5.
+
+`hand_raised` (UCF101) is **identical in all four configurations**: holdout TP/FP/FN/TN 5/3/1/9, all clips 10/3/6/21.
+
+The shipped defaults reproduce C exactly with no `--params` overrides (`algorithm_version: rules-v0.3`, `params_override: null`).
+
+### Verdict (honest)
+
+- **rules-v0.3 halves held-out false positives (6 → 3) and halves raw held-out recall (4/10 → 2/10).** Raw precision is unchanged (0.40). None of these differences is statistically significant at 10 held-out stand-ups; the intervals overlap almost completely.
+- **Why ship it anyway.** Frame review on the person-tracking branch showed that one of v0.2's four held-out "hits" (NY5R2) came from a phantom pose on a backpack, and that a v0.2 false positive (K5CRM) stitched seated and standing evidence from **two different people**. Attributing one person's movement to another is a worse failure in a review tool than a missed suggestion (draft risk file, H-03). Tracking is the control for that hazard, and it costs recall that partly came from artifacts.
+- **Camera motion** is estimated, shown on the timeline and reported in warnings. Masking is off by default because the pre-registered rule could not distinguish it on the tune half. The post-hoc held-out rows suggest masking cuts false positives further (D: 2). That evidence is held-out and must not drive the default; it is a candidate for the next tune/holdout cycle, ideally on more data.
+- **This is not clinical evidence.** Small public samples, non-ABA footage, and adjudication by the authoring agent. See `docs/regulatory/clinical_validation_plan.md` for what clinical evidence would require.
+
+Reproduce:
+
+```bash
+python scripts/validate_real_video.py --split holdout                           # rules-v0.3 defaults (C)
+python scripts/validate_real_video.py --split holdout --attribution legacy \
+  --params '{"mask_camera_motion": false}'                                       # A: rules-v0.2
+python scripts/validate_real_video.py --split holdout --params '{"mask_camera_motion": true}'   # D
+```
 
 ## What we learned (and what changed)
 

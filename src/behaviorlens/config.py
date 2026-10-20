@@ -14,7 +14,7 @@ from typing import Any
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
-ALGORITHM_VERSION = "rules-v0.2"
+ALGORITHM_VERSION = "rules-v0.3"
 
 # MediaPipe Pose Landmarker model (downloaded by scripts/download_model.py).
 MODEL_NAME = "pose_landmarker_lite"
@@ -131,7 +131,11 @@ class RuleParams:
     # one-frame pad at 0.2 /s, or 5 deg/s already lost one); see docs/VALIDATION.md, "Camera motion".
     # Hand rules are not masked: the cue is within-frame geometry, and masking changed no
     # tuning-split clip outcome (it only split one event).
-    mask_camera_motion: bool = True
+    # rules-v0.3 default: OFF. Under the pre-registered selection rule (docs/VALIDATION.md,
+    # "rules-v0.3"), masking changed nothing on the tuning split once tracking was on, so the
+    # tie-break chose the simpler configuration. Motion is still estimated and shown to the
+    # reviewer (timeline lane, warnings); the reviewer can switch masking on per analysis.
+    mask_camera_motion: bool = False
     camera_max_translation_per_s: float = 0.2
     camera_max_rotation_deg_per_s: float = 10.0
     camera_max_scale_change_per_s: float = 0.1

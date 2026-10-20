@@ -97,11 +97,11 @@ python scripts/fetch_validation_clips.py        # Charades and UCF101 research s
 python scripts/validate_real_video.py --split holdout
 ```
 
-Results and protocol are in [`docs/VALIDATION.md`](docs/VALIDATION.md). On held-out Charades clips (consenting adults acting out home scripts), v0.2 finds 4/10 stand-ups with precision 0.40, against 2/10 for v0.1. Most misses are stand-ups where the legs are hidden.
+Results and protocol are in [`docs/VALIDATION.md`](docs/VALIDATION.md). On held-out Charades clips (consenting adults acting out home scripts), the shipped **rules-v0.3** finds 2/10 stand-ups with precision 0.40 (2/5) and 3 false positives, against 4/10, 0.40 and 6 for rules-v0.2. v0.3 removes identity-switch artifacts at a recall cost; no difference is statistically significant at this sample size. Most misses are stand-ups where the legs are hidden.
 
 Every PRD requirement and acceptance test is mapped to its implementation and test in [`docs/PRD_TRACEABILITY.md`](docs/PRD_TRACEABILITY.md).
 
-## Event definitions (rules-v0.2)
+## Event definitions (rules-v0.3)
 
 All thresholds are engineering heuristics, adjustable under **Analysis controls**. They are not validated clinical criteria.
 
@@ -111,9 +111,10 @@ All thresholds are engineering heuristics, adjustable under **Analysis controls*
   - *Standing-like*: hips extended (≥ 150°), both thighs pointing down (drop ≥ 0.3), torso within 35° of vertical, and knees straight if the ankles are visible.
   - Shoulders, hips and knees must be visible **and inside the frame**. Upper-body visibility alone never implies sitting.
 - **`sustained_standing`** (optional, P1): a standing-like run of at least 2 s.
-- **Camera motion**: landmarks are image coordinates, so a pan, tilt or zoom changes apparent posture. Global background motion between sampled frames is estimated with OpenCV (person region excluded), and frames where the camera moves faster than 0.2 frame widths/s, 10°/s or 10 % zoom/s are **unobservable for posture**. Hand rules are not masked. Shown as a grey *Camera motion* lane on the timeline and as a warning; see [`docs/VALIDATION.md`](docs/VALIDATION.md#camera-motion).
+- **Subject (person tracking)**: up to 4 people are detected per frame and linked across frames by position and size only (no identity or face recognition). Events are computed for one subject track, chosen automatically (greatest coverage × size) or by the reviewer. Frames without the subject are unobservable, never filled in from someone else.
+- **Camera motion**: landmarks are image coordinates, so a pan, tilt or zoom changes apparent posture. Global background motion between sampled frames is estimated with OpenCV (every detected person excluded) and shown as a grey *Camera motion* lane on the timeline, with a warning when the camera moved. Optionally (**off by default** in rules-v0.3), frames where the camera moves faster than 0.2 frame widths/s, 10°/s or 10 % zoom/s are treated as **unobservable for posture**. Hand rules are never masked.
 
-v0.2's posture thresholds were chosen on real video (Charades) and checked on a held-out half; see [`docs/VALIDATION.md`](docs/VALIDATION.md) for the numbers and limits. v0.1's synthetic-tuned thresholds caught fewer than half of real seated frames.
+Posture thresholds (since v0.2), tracking parameters and camera-motion thresholds were chosen on real video (Charades) on a tuning half and checked on a held-out half; the v0.3 configuration was picked by a pre-registered rule; see [`docs/VALIDATION.md`](docs/VALIDATION.md) for the numbers and limits. v0.1's synthetic-tuned thresholds caught fewer than half of real seated frames.
 
 Pipeline: per-frame features → tri-state candidate states (true / false / unobservable) → bridging of gaps up to 0.4 s → temporal segments → minimum-duration filters → events carrying `evidence`, `algorithm_version` and rule parameters.
 

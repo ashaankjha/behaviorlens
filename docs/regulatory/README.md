@@ -36,7 +36,7 @@ Related engineering records outside this folder: [PRD](../PRD.md), [PRD traceabi
 
 - Automated tests for event rules, storage integrity (migrations, hash-chained audit trail, tamper detection), exports, input robustness, logging redaction and the UI (Streamlit AppTest).
 - CI on every push: ruff, mypy (strict), pytest with coverage and an enforced floor (`fail_under = 91`; 91.57% line+branch measured on 2026-10-20), `pip-audit` on pinned dependencies (lint, type-check, test, coverage and audit tools are also pinned in `constraints.txt`), and a Docker build with a loopback/non-root/model-hash smoke test. The Docker image is built only in CI, not as part of local verification.
-- Real-video engineering measurements on small public research samples. Held-out `standing_transition` recall and precision are both 0.40 (4/10). These are engineering evidence, **not clinical validation** ([VALIDATION.md](../VALIDATION.md)).
+- Real-video engineering measurements on small public research samples. Held-out `standing_transition` for the shipped rules-v0.3: recall 0.20 (2/10), precision 0.40 (2/5), 3 false positives (rules-v0.2: 0.40, 0.40, 6). These are engineering evidence, **not clinical validation** ([VALIDATION.md](../VALIDATION.md)).
 - An independent clean-room audit with every discrepancy resolved ([AUDIT.md](../AUDIT.md)).
 
 ## What remains before any clinical use

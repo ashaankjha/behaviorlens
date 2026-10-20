@@ -364,8 +364,14 @@ with tab_review:
             dwell = c1.slider("Standing: dwell before/after (s)", 0.4, 3.0, d.dwell_s, 0.1)
             gap = c2.slider("Bridge gaps up to (s)", 0.0, 1.5, d.merge_gap_s, 0.1)
             sustained = st.checkbox("Also suggest sustained standing (≥2 s)", d.enable_sustained_standing)
+            mask_cam = st.checkbox(
+                "Treat moving-camera frames as unobservable for posture", d.mask_camera_motion,
+                help="Off by default in rules-v0.3 (see docs/VALIDATION.md). On real video it removed "
+                     "pan-induced false stand-ups but also hid stand-ups filmed by a camera that follows "
+                     "the person.")
             params = RuleParams(visibility_threshold=vis, hand_raise_min_s=hmin, dwell_s=dwell,
-                                merge_gap_s=gap, enable_sustained_standing=sustained)
+                                merge_gap_s=gap, enable_sustained_standing=sustained,
+                                mask_camera_motion=mask_cam)
             subject = None if synthetic else subject_selector(session_id, analysis)
             pending = store.pending_algorithm_count(session_id)
             confirm_ok = True

@@ -28,7 +28,7 @@ In Claude Code cloud sessions, `.claude/hooks/session-start.sh` does the setup a
 
 ## Layout
 
-`app.py` (UI only) → `src/behaviorlens/` (`video_io`, `pose`, `features`, `event_rules`, `pipeline`, `storage`, `export`, `metrics`, `demo_generator`, `config`, `models`). Core logic must stay UI-independent, and the rules must stay runnable on synthetic `PoseSequence`s without video.
+`app.py` (UI only) → `src/behaviorlens/` (`video_io`, `pose`, `tracking`, `camera_motion`, `features`, `event_rules`, `pipeline`, `storage`, `export`, `metrics`, `logging_setup`, `demo_generator`, `config`, `models`). Real videos run through `extract_multi_pose` → `tracking` → subject track → rules; trace that path when wiring new per-frame signals (LEARNINGS M38). Core logic must stay UI-independent, and the rules must stay runnable on synthetic `PoseSequence`s without video.
 
 ## Non-negotiables (from the PRD)
 

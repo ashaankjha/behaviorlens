@@ -35,7 +35,7 @@ The study evaluates a **review aid**. It does not evaluate autonomous detection.
 
 ## 3. Current engineering evidence and its limits
 
-From [VALIDATION.md](../VALIDATION.md) (2026-10-18, `rules-v0.2`, `pose_landmarker_lite`, 5 fps):
+From [VALIDATION.md](../VALIDATION.md) (`pose_landmarker_lite`, 5 fps). Figures below are rules-v0.2 (2026-10-18); the shipped rules-v0.3 has held-out recall 0.20 (2/10) and precision 0.40 (2/5), see VALIDATION *rules-v0.3*:
 
 | Measure | Result | Limits |
 |---|---|---|
