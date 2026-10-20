@@ -8,6 +8,7 @@ Usage:
                                           [--fps 5] [--json out.json]
                                           [--attribution tracked|largest|legacy] [--max-people 4]
                                           [--tracking-params '{"max_gap_s": 2.0}']
+                                          [--dataset utkinect,pkummd2,charades]
 
 The pose model is config.model_path() (override with BEHAVIORLENS_MODEL_PATH). The landmark
 cache is keyed by clip, model version (name + content hash), fps and camera-motion estimator
@@ -30,6 +31,10 @@ Metrics:
   posture rule observes, the share labelled seated that the rule calls standing and the reverse.
 * UCF101 hand_raised (clip level). Arms-overhead classes should yield >=1 event; the
   other classes should yield none.
+* --dataset NAME[,NAME...]: any dataset in the shared format of scripts/datasets.py
+  (data/validation/<name>/annotations.json; legacy Charades is converted on load). Event-level
+  standing_transition (with sitting_down confusions) and hand_raised per dataset and pooled,
+  scored by datasets.score_events with the same overlap rule as the Charades metric.
 """
 
 from __future__ import annotations
@@ -46,7 +51,10 @@ from pathlib import Path
 
 import numpy as np
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+
+import datasets  # noqa: E402
 
 from behaviorlens import config  # noqa: E402
 from behaviorlens.camera_motion import CAMERA_MOTION_VERSION  # noqa: E402
@@ -78,8 +86,13 @@ def cache_path(clip: Path, model_ver: str, fps: float, max_people: int | None = 
     ``max_people`` for all-people caches (num_poses changes MediaPipe's output). ``None`` is the
     rules-v0.2 single-person cache (num_poses = 2, largest person per frame)."""
     safe_model = model_ver.replace("@", "-")
+    # Shared-format datasets keep clips in <dataset>/videos/; prefix with the dataset name so ids
+    # can't collide across datasets. Charades keeps its original "videos_" prefix (existing caches).
+    prefix = clip.parent.name
+    if prefix == "videos" and clip.parent.parent.name != "charades":
+        prefix = clip.parent.parent.name
     multi = f"_multi{max_people}" if max_people is not None else ""
-    name = f"{clip.parent.name}_{clip.stem}_{safe_model}_{fps:g}fps{multi}_{CAMERA_MOTION_VERSION}.npz"
+    name = f"{prefix}_{clip.stem}_{safe_model}_{fps:g}fps{multi}_{CAMERA_MOTION_VERSION}.npz"
     return vdir() / "cache" / name
 
 
@@ -306,6 +319,69 @@ def eval_ucf(analyze: Analyzer, poses: dict[str, str], split: str) -> dict:
             "per_class": per_class, "per_clip": rows}
 
 
+def eval_dataset(analyze: Analyzer, poses: dict[str, str], name: str, records: list[dict],
+                 split: str, tol: float) -> dict:
+    """Event-level metrics for one shared-format dataset (see scripts/datasets.py)."""
+    st_rows, hr_rows, clips = [], [], []
+    for rec in datasets.select(records, name, split):
+        cache = poses.get(str(datasets.video_path(name, rec, vdir())))
+        if not cache or cache.startswith("ERROR"):
+            continue
+        res = analyze(cache, rec["video_id"])
+        det = {t: [(e.start_s, e.end_s) for e in res.events if e.event_type == t]
+               for t in ("standing_transition", "hand_raised")}
+        st = datasets.match_video(rec, det["standing_transition"], "standing_transition", tol)
+        hr = datasets.match_video(rec, det["hand_raised"], "hand_raised", tol)
+        st_rows.append(st)
+        hr_rows.append(hr)
+        clips.append({"dataset": name, "clip": rec["video_id"], "camera": rec["camera"],
+                      "subjects": rec["subjects"],
+                      "standing": {k: st[k] for k in ("windows", "found", "detections", "correct", "fp_labels")},
+                      "hand": {k: hr[k] for k in ("windows", "found", "detections", "correct", "fp_labels")},
+                      "standing_detections": [[round(a, 2), round(b, 2)] for a, b in det["standing_transition"]],
+                      "hand_detections": [[round(a, 2), round(b, 2)] for a, b in det["hand_raised"]],
+                      "posture_observable": res.stats["posture_rule_observable_ratio"],
+                      "hand_observable": res.stats["hand_rule_observable_ratio"],
+                      "pose_detected": res.stats["pose_detected_ratio"],
+                      "camera_moving": res.stats.get("camera_moving_ratio"), **_tracking_row(res)})
+    return summarize(st_rows, hr_rows, clips)
+
+
+def summarize(st_rows: list[dict], hr_rows: list[dict], clips: list[dict]) -> dict:
+    def med(key: str) -> float | None:
+        vals = sorted(c[key] for c in clips if c.get(key) is not None)
+        return vals[len(vals) // 2] if vals else None
+
+    observable = [(r, c) for r, c in zip(st_rows, clips) if r["windows"] and c["posture_observable"] >= 0.3]
+    st = datasets.score_events(st_rows)
+    st["recall_when_legs_observable"] = (
+        round(sum(r["found"] for r, _ in observable) / sum(r["windows"] for r, _ in observable), 3)
+        if observable else None)
+    st["videos_with_stand_up_and_legs_observable"] = len(observable)
+    moving = [c["camera_moving"] for c in clips if c.get("camera_moving") is not None]
+    return {"videos": len(clips), "standing_transition": st, "hand_raised": datasets.score_events(hr_rows),
+            "median_posture_observable": med("posture_observable"),
+            "median_hand_observable": med("hand_observable"), "median_pose_detected": med("pose_detected"),
+            "camera_moving_ratio": {"median": med("camera_moving"),
+                                    "mean": round(sum(moving) / len(moving), 4) if moving else None,
+                                    "max": max(moving) if moving else None},
+            "per_clip": clips, "_rows": (st_rows, hr_rows)}
+
+
+def eval_datasets(analyze: Analyzer, poses: dict[str, str], loaded: dict[str, list[dict]],
+                  split: str, tol: float) -> dict:
+    per = {n: eval_dataset(analyze, poses, n, recs, split, tol) for n, recs in loaded.items()}
+    out = {}
+    if len(per) > 1:
+        st = [r for p in per.values() for r in p["_rows"][0]]
+        hr = [r for p in per.values() for r in p["_rows"][1]]
+        out["pooled"] = summarize(st, hr, [c for p in per.values() for c in p["per_clip"]])
+    out.update(per)
+    for p in out.values():
+        p.pop("_rows")
+    return out
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--params", default="{}", help="JSON overrides for RuleParams")
@@ -319,12 +395,19 @@ def main() -> None:
     ap.add_argument("--max-people", type=int, default=config.DEFAULT_MAX_PEOPLE,
                     help="MediaPipe num_poses for the tracked/largest attributions")
     ap.add_argument("--tracking-params", default="{}", help="JSON overrides for TrackingParams")
+    ap.add_argument("--dataset", help="comma-separated shared-format datasets (scripts/datasets.py); "
+                                      "replaces the default Charades/UCF101 evaluation")
     a = ap.parse_args()
     params, overrides = parse_params(a.params)
     tracking = parse_tracking(a.tracking_params)
     max_people = None if a.attribution == "legacy" else a.max_people
     analyze = Analyzer(a.attribution, params, tracking)
-    paths = sorted((vdir() / "charades" / "videos").glob("*.mp4")) + sorted((vdir() / "ucf101").glob("*.avi"))
+    loaded = {n: datasets.load_dataset(n, vdir()) for n in a.dataset.split(",")} if a.dataset else {}
+    if loaded:
+        paths = sorted({datasets.video_path(n, r, vdir()) for n, recs in loaded.items() for r in recs
+                        if datasets.video_path(n, r, vdir()).is_file()})
+    else:
+        paths = sorted((vdir() / "charades" / "videos").glob("*.mp4")) + sorted((vdir() / "ucf101").glob("*.avi"))
     if not paths:
         sys.exit("no clips: run scripts/fetch_validation_clips.py first")
     t0 = time.time()
@@ -345,12 +428,23 @@ def main() -> None:
         "params_override": overrides or None,
         "split": a.split,
         "tolerance_s": a.tol,
+        "clip_errors": errors,
+    }
+    if loaded:
+        result["datasets"] = eval_datasets(analyze, poses, loaded, a.split, a.tol)
+        result["seconds"] = round(time.time() - t0, 1)
+        if a.json:
+            Path(a.json).write_text(json.dumps(result, indent=1))
+        result["datasets"] = {n: {k: v for k, v in d.items() if k != "per_clip"}
+                              for n, d in result["datasets"].items()}
+        print(json.dumps(result, indent=1))
+        return
+    result.update({
         "charades_standing_transition": eval_charades(analyze, poses, a.split, a.tol),
         "charades_posture_frames": eval_charades_frames(analyze, poses, a.split),
         "ucf101_hand_raised": eval_ucf(analyze, poses, a.split),
-        "clip_errors": errors,
         "seconds": round(time.time() - t0, 1),
-    }
+    })
     if a.json:
         Path(a.json).write_text(json.dumps(result, indent=1))
     summary = {k: v for k, v in result.items() if k not in ("charades_standing_transition", "ucf101_hand_raised")}
