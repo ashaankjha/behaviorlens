@@ -175,3 +175,24 @@ def test_tune_grid_settings_expand_and_reject_typos():
     assert len(s) == 6 and {"dwell_s": 0.4, "max_transition_s": 7} in s
     with pytest.raises(SystemExit, match="dwel_s"):
         g.settings({"dwel_s": [1]})
+
+
+def test_skeleton_adjudication_windows_follow_the_hand_raised_definition():
+    import numpy as np
+
+    from behaviorlens.config import RuleParams
+
+    sa = _load("skeleton_adjudication")
+    t = np.arange(0, 6, 1 / 30)
+    j = np.zeros((len(t), 25, 3))
+    head, centre, ls, lw, rs, rw = sa.JOINTS["v2"]
+    j[:, head, 1], j[:, centre, 1], j[:, ls, 1], j[:, rs, 1] = 1.6, 1.4, 1.4, 1.4  # head unit 0.2 m
+    j[:, lw, 1] = j[:, rw, 1] = 1.0  # hands down
+    j[(t >= 1) & (t < 2), rw, 1] = 1.55  # 1 s raise, 0.75 head units above the shoulder
+    j[(t >= 3) & (t < 3.4), lw, 1] = 1.55  # 0.4 s: too short
+    j[(t >= 4) & (t < 5), lw, 1] = 1.45  # only 0.25 units above: not raised
+    j[(t >= 1.4) & (t < 1.6)] = np.nan  # skeleton dropout inside the raise is bridged
+    # bending collapses the per-frame head unit; the video median keeps low hands unraised
+    j[(t >= 5.2) & (t < 6), head, 1] = 1.41
+    w = sa.raised_windows(t, j, "v2", RuleParams())
+    assert len(w) == 1 and w[0][0] == pytest.approx(1.0) and w[0][1] == pytest.approx(2.0 - 1 / 30)
