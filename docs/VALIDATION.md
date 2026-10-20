@@ -353,3 +353,21 @@ python scripts/validate_real_video.py --split holdout --params '{"mask_camera_mo
 - ~~Add person tracking.~~ Done (see *Person tracking*).
 - ~~Add camera-motion detection.~~ Done (see *Camera motion*).
 - Integrated in rules-v0.3: see *rules-v0.3: tracking + camera motion combined*.
+
+## Fixed-camera datasets (UTKinect-Action3D, PKU-MMD)
+
+Run date: 2026-10-20. *Work in progress: this section is completed below once the runs finish.*
+
+### Phase 2 pre-registration (written before any tune-split result on the new data was viewed)
+
+> Disclosure: before writing this, one diagnostic run of the shipped rules (C) on the **UTKinect holdout** half was viewed (13 videos), and two held-out misses were inspected. No tune-split result on UTKinect or PKU-MMD had been computed.
+>
+> **Data.** Pooled tune split = tune halves of Charades (legacy split key), UTKinect, PKU-MMD Phase 1 and Phase 2 (front view), split by `datasets.split_of(f"{dataset}:{video_id}")`. Proceed only if it holds ≥ 25 `standing_transition` windows.
+>
+> **Fixed.** `pose_landmarker_lite`, 5 fps, tracked attribution (rules-v0.3, the H-03 control), tracking parameters, all posture/hand angle thresholds, `hand_raise_min_s` (the PRD's 0.6 s definition), `--tol 1.0`.
+>
+> **Grid (96 settings).** `dwell_s` ∈ {0.4, 0.6, 0.8, 1.0} × `max_transition_s` ∈ {3, 5, 7} × `visibility_threshold` ∈ {0.3, 0.4, 0.5, 0.6} × `mask_camera_motion` ∈ {false, true}. rules-v0.3 is (0.8, 5, 0.5, false).
+>
+> **Objective.** Highest pooled-tune `standing_transition` F1 (micro, from pooled counts). **Guard:** pooled-tune `hand_raised` F1 against labels must not fall more than 0.02 below rules-v0.3's. **Ties** (F1 within 0.005): fewer pooled-tune false positives, then fewest parameters changed from rules-v0.3, then the value closest to rules-v0.3.
+>
+> **Holdout.** Score the selected setting and rules-v0.3 on the pooled holdout **once**, per dataset and pooled, with Wilson intervals. The selected setting is reported as a *rules-v0.4 candidate*; `config.py` defaults are not changed here.
