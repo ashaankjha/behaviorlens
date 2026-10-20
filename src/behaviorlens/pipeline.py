@@ -19,6 +19,7 @@ import cv2
 import numpy as np
 
 from . import config, demo_generator
+from .camera_motion import CAMERA_MOTION_VERSION, CameraMotionEstimator, camera_motion_stats
 from .config import AnalysisSettings, RuleParams, TrackingParams
 from .event_rules import detect_all, observability_stats
 from .models import NUM_LANDMARKS, VISIBILITY, X, Y, AnalysisResult, PoseSequence, VideoMeta, new_id
@@ -51,6 +52,7 @@ def analyze_pose(seq: PoseSequence, params: RuleParams, session_id: str,
     """Run the rules on one person's sequence. ``tracking`` (from ``TrackingResult.stats``)
     says that ``seq`` is one tracked subject among the people in view."""
     stats = observability_stats(seq, params)
+    stats.update(camera_motion_stats(seq, params))
     warnings: list[str] = []
     if len(seq) == 0 or stats["pose_detected_ratio"] == 0:
         warnings.append("No person was detected in any sampled frame, so no events could be suggested.")
@@ -71,6 +73,11 @@ def analyze_pose(seq: PoseSequence, params: RuleParams, session_id: str,
         warnings.append(
             f"More than one person was detected in {stats['multi_person_frame_ratio']:.0%} of frames. "
             "Events are attributed to the largest detected person; attribution is not reliable."
+        )
+    if stats.get("camera_moving_ratio"):
+        warnings.append(
+            f"The camera moved (pan, tilt, zoom or shake) in {stats['camera_moving_ratio']:.0%} of sampled frames. "
+            "Posture is treated as unobservable there, because landmark positions mix camera and body movement."
         )
     if 0 < len(seq) and stats["posture_rule_observable_ratio"] < 0.5:
         warnings.append(
@@ -107,12 +114,15 @@ def analyze_multi_pose(multi: MultiPoseSequence, params: RuleParams, session_id:
 
 
 def extract_multi_pose(video_path: Path, meta: VideoMeta, estimator: PoseEstimator, sample_fps: float,
-                       progress: Progress = _noop) -> tuple[MultiPoseSequence, list[str]]:
-    """Every detected person per sampled frame. Estimators without ``detect_all`` (single
-    person) contribute at most one detection per frame."""
+                       progress: Progress = _noop, camera_motion: bool = True,
+                       ) -> tuple[MultiPoseSequence, list[str]]:
+    """Every detected person per sampled frame, plus (by default) camera motion estimated with
+    all detected people excluded from the background. Estimators without ``detect_all``
+    (single person) contribute at most one detection per frame."""
     warnings: list[str] = []
     detect_all = getattr(estimator, "detect_all", None)
-    times, indices, frames = [], [], []
+    motion_est = CameraMotionEstimator() if camera_motion else None
+    times, indices, frames, motion = [], [], [], []
     total = max(1, int(meta.duration_s * min(sample_fps, meta.fps)))
     for k, (frame_idx, t, frame) in enumerate(iter_sampled_frames(video_path, meta, sample_fps, warnings)):
         if detect_all is not None:
@@ -120,6 +130,8 @@ def extract_multi_pose(video_path: Path, meta: VideoMeta, estimator: PoseEstimat
         else:
             lms, _ = estimator.detect(frame, t)
             people = [] if lms is None else [lms]
+        if motion_est is not None:
+            motion.append(motion_est.update(frame, people))
         times.append(t)
         indices.append(frame_idx)
         frames.append(people)
@@ -128,17 +140,22 @@ def extract_multi_pose(video_path: Path, meta: VideoMeta, estimator: PoseEstimat
     if not times:
         raise VideoValidationError("No frames could be decoded from this video.")
     multi = MultiPoseSequence.from_frames(times, indices, frames, sample_fps=min(sample_fps, meta.fps),
-                                          duration_s=meta.duration_s, data_mode="video_inference")
+                                          duration_s=meta.duration_s, data_mode="video_inference",
+                                          camera_motion=np.stack(motion) if motion else None)
     return multi, warnings
 
 
 def extract_pose(video_path: Path, meta: VideoMeta, estimator: PoseEstimator, sample_fps: float,
-                 progress: Progress = _noop) -> tuple[PoseSequence, list[str]]:
+                 progress: Progress = _noop, camera_motion: bool = True) -> tuple[PoseSequence, list[str]]:
+    """Pose landmarks (and, by default, camera motion) for each sampled frame."""
     warnings: list[str] = []
-    times, indices, rows, people = [], [], [], []
+    times, indices, rows, people, motion = [], [], [], [], []
+    motion_est = CameraMotionEstimator() if camera_motion else None
     total = max(1, int(meta.duration_s * min(sample_fps, meta.fps)))
     for k, (frame_idx, t, frame) in enumerate(iter_sampled_frames(video_path, meta, sample_fps, warnings)):
         lms, n = estimator.detect(frame, t)
+        if motion_est is not None:
+            motion.append(motion_est.update(frame, lms))
         times.append(t)
         indices.append(frame_idx)
         rows.append(lms if lms is not None else np.full((NUM_LANDMARKS, 5), np.nan))
@@ -151,6 +168,7 @@ def extract_pose(video_path: Path, meta: VideoMeta, estimator: PoseEstimator, sa
         timestamps_s=np.array(times), frame_indices=np.array(indices), landmarks=np.stack(rows),
         sample_fps=min(sample_fps, meta.fps), duration_s=meta.duration_s,
         num_people=np.array(people), data_mode="video_inference",
+        camera_motion=np.stack(motion) if motion else None,
     )
     return seq, warnings
 
@@ -230,7 +248,8 @@ def _pose_cache_path(store: Store, checksum: str, model_version: str, sample_fps
     output, so it is part of the key); tracking runs after the cache, on every analysis."""
     safe_model = model_version.replace("@", "_").replace("/", "_")
     multi = f"_multi{max_people}" if max_people is not None else ""
-    return store.cache_dir() / f"{checksum}_{safe_model}_{sample_fps:g}fps{multi}.npz"
+    # The camera-motion version is part of the key: older caches lack motion data.
+    return store.cache_dir() / f"{checksum}_{safe_model}_{sample_fps:g}fps{multi}_{CAMERA_MOTION_VERSION}.npz"
 
 
 def tracks_path(store: Store, session_id: str, analysis_id: str) -> Path:

@@ -10,8 +10,9 @@ Usage:
                                           [--tracking-params '{"max_gap_s": 2.0}']
 
 The pose model is config.model_path() (override with BEHAVIORLENS_MODEL_PATH). The landmark
-cache is keyed by clip, model version (name + content hash) and fps, so switching models or
-sampling rates never silently reuses another model's landmarks (LEARNINGS M21).
+cache is keyed by clip, model version (name + content hash), fps and camera-motion estimator
+version, so switching models or sampling rates never silently reuses another model's landmarks
+(LEARNINGS M21), and caches without camera-motion data are never mistaken for current ones.
 
 Attribution (which person's landmarks the rules see):
 * tracked (default): all people (MediaPipe num_poses = --max-people) are tracked across frames and
@@ -24,6 +25,9 @@ Metrics:
   label-154 "standing up" window widened by --tol seconds. Recall counts windows with
   at least one detection. Detections inside label-151 "sitting down" windows are reported
   separately as confusions.
+* Charades per-frame posture. Frames inside a seated activity (and no standing activity or
+  stand-up/sit-down window) are labelled seated, and vice versa. Reports, over frames the
+  posture rule observes, the share labelled seated that the rule calls standing and the reverse.
 * UCF101 hand_raised (clip level). Arms-overhead classes should yield >=1 event; the
   other classes should yield none.
 """
@@ -40,9 +44,12 @@ from concurrent.futures import ProcessPoolExecutor
 from functools import partial
 from pathlib import Path
 
+import numpy as np
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from behaviorlens import config  # noqa: E402
+from behaviorlens.camera_motion import CAMERA_MOTION_VERSION  # noqa: E402
 from behaviorlens.config import RuleParams, TrackingParams  # noqa: E402
 from behaviorlens.models import AnalysisResult, PoseSequence  # noqa: E402
 from behaviorlens.pipeline import analyze_multi_pose, analyze_pose, extract_multi_pose, extract_pose  # noqa: E402
@@ -51,6 +58,9 @@ from behaviorlens.tracking import MultiPoseSequence  # noqa: E402
 from behaviorlens.video_io import VideoValidationError, probe_video  # noqa: E402
 
 STAND_UP, SIT_DOWN = 154, 151
+# Charades activities that imply a posture for per-frame checks (class names from the dataset card).
+SEATED_ACTIVITIES = {11, 59, 123}  # sitting at a table, in a chair, on a sofa/couch
+STANDING_ACTIVITIES = {6, 8, 97, 104, 105}  # closing/opening a door, doorway, light on/off
 
 
 def vdir() -> Path:
@@ -63,12 +73,14 @@ def split_of(clip_id: str) -> str:
 
 
 def cache_path(clip: Path, model_ver: str, fps: float, max_people: int | None = None) -> Path:
-    """Landmark cache file for one clip. Model version and fps are part of the key, and so is
+    """Landmark cache file for one clip. Model version, fps and the camera-motion estimator
+    version are part of the key, and so is
     ``max_people`` for all-people caches (num_poses changes MediaPipe's output). ``None`` is the
     rules-v0.2 single-person cache (num_poses = 2, largest person per frame)."""
     safe_model = model_ver.replace("@", "-")
     multi = f"_multi{max_people}" if max_people is not None else ""
-    return vdir() / "cache" / f"{clip.parent.name}_{clip.stem}_{safe_model}_{fps:g}fps{multi}.npz"
+    name = f"{clip.parent.name}_{clip.stem}_{safe_model}_{fps:g}fps{multi}_{CAMERA_MOTION_VERSION}.npz"
+    return vdir() / "cache" / name
 
 
 def pose_for(path_str: str, model_file: str, model_ver: str, fps: float,
@@ -136,6 +148,16 @@ class Analyzer:
         loader = PoseSequence if self.attribution == "legacy" else MultiPoseSequence
         return len(loader.load_npz(cache))
 
+    def sequence(self, cache: str, clip_id: str) -> PoseSequence:
+        """The PoseSequence the rules run on under this attribution."""
+        if self.attribution == "legacy":
+            return PoseSequence.load_npz(cache)
+        multi = MultiPoseSequence.load_npz(cache)
+        if self.attribution == "largest":
+            return multi.largest_person_sequence()
+        _, _, seq = analyze_multi_pose(multi, self.params, clip_id, self.tracking)
+        return seq
+
     def __call__(self, cache: str, clip_id: str) -> AnalysisResult:
         if self.attribution == "legacy":
             return analyze_pose(PoseSequence.load_npz(cache), self.params, clip_id)
@@ -183,8 +205,10 @@ def eval_charades(analyze: Analyzer, poses: dict[str, str], split: str, tol: flo
         det_sitdown += confused
         clips.append({"clip": a["video_id"], "scene": a["scene"], "stand_up_windows": len(ups),
                       "found": found, "detections": len(det), "correct_detections": good,
+                      "detection_times": [[round(s, 2), round(e, 2)] for s, e in det],
                       "posture_observable": res.stats["posture_rule_observable_ratio"],
-                      "pose_detected": res.stats["pose_detected_ratio"], **_tracking_row(res),
+                      "pose_detected": res.stats["pose_detected_ratio"],
+                      "camera_moving": res.stats.get("camera_moving_ratio"), **_tracking_row(res),
                       "detected_s": [[e.start_s, e.end_s] for e in res.events
                                      if e.event_type == "standing_transition"]})
     observable = [c for c in clips if c["stand_up_windows"] and c["posture_observable"] >= 0.3]
@@ -204,6 +228,53 @@ def eval_charades(analyze: Analyzer, poses: dict[str, str], split: str, tol: flo
     }
 
 
+def eval_charades_frames(analyze: Analyzer, poses: dict[str, str], split: str) -> dict:
+    """Per-frame posture accuracy on the sequence the rules actually see (the subject track
+    when tracking)."""
+    from behaviorlens.features import SEATED, STANDING, UNKNOWN, posture_features
+
+    ann = json.loads((vdir() / "charades" / "annotations.json").read_text())
+    labels, states = [], []
+    for a in ann:
+        if split != "all" and split_of(a["video_id"]) != split:
+            continue
+        cache = poses.get(str(vdir() / "charades" / "videos" / f"{a['video_id']}.mp4"))
+        if not cache or cache.startswith("ERROR"):
+            continue
+        seq = analyze.sequence(cache, a["video_id"])
+        t = seq.timestamps_s
+
+        def inside(ids: set[int], t=t, a=a):
+            m = np.zeros(len(t), bool)
+            for lab, (s, e) in zip(a["labels"], a["action_timings"]):
+                if lab in ids:
+                    m |= (t >= s) & (t <= e)
+            return m
+
+        seat, stand, trans = inside(SEATED_ACTIVITIES), inside(STANDING_ACTIVITIES), inside({STAND_UP, SIT_DOWN})
+        lab = np.zeros(len(t), int)
+        lab[seat & ~stand & ~trans] = SEATED
+        lab[stand & ~seat & ~trans] = STANDING
+        labels.append(lab)
+        states.append(posture_features(seq, analyze.params).state)
+    if not labels:
+        return {}
+    lab, st = np.concatenate(labels), np.concatenate(states)
+    obs = st != UNKNOWN
+    n_seat, n_stand = int(np.sum((lab == SEATED) & obs)), int(np.sum((lab == STANDING) & obs))
+    rate = lambda num, den: round(float(num) / den, 4) if den else None  # noqa: E731
+    acc_seat = rate(np.sum((lab == SEATED) & (st == SEATED)), n_seat)
+    acc_stand = rate(np.sum((lab == STANDING) & (st == STANDING)), n_stand)
+    return {
+        "labelled_frames_seated": int(np.sum(lab == SEATED)), "labelled_frames_standing": int(np.sum(lab == STANDING)),
+        "observed_seated": n_seat, "observed_standing": n_stand,
+        "balanced_accuracy": round((acc_seat + acc_stand) / 2, 3) if acc_seat is not None and acc_stand is not None
+        else None,
+        "seated_called_standing": rate(np.sum((lab == SEATED) & (st == STANDING)), n_seat),
+        "standing_called_seated": rate(np.sum((lab == STANDING) & (st == SEATED)), n_stand),
+    }
+
+
 def eval_ucf(analyze: Analyzer, poses: dict[str, str], split: str) -> dict:
     labels = json.loads((vdir() / "ucf101" / "labels.json").read_text())
     rows = []
@@ -217,7 +288,8 @@ def eval_ucf(analyze: Analyzer, poses: dict[str, str], split: str) -> dict:
         n = sum(e.event_type == "hand_raised" for e in res.events)
         rows.append({"clip": name, "class": lab["class"], "arms_overhead": lab["arms_overhead"],
                      "hand_raised_events": n, "predicted": n > 0,
-                     "hand_observable": res.stats["hand_rule_observable_ratio"], **_tracking_row(res)})
+                     "hand_observable": res.stats["hand_rule_observable_ratio"],
+                     "camera_moving": res.stats.get("camera_moving_ratio"), **_tracking_row(res)})
     tp = sum(r["predicted"] and r["arms_overhead"] for r in rows)
     fp = sum(r["predicted"] and not r["arms_overhead"] for r in rows)
     fn = sum(not r["predicted"] and r["arms_overhead"] for r in rows)
@@ -274,6 +346,7 @@ def main() -> None:
         "split": a.split,
         "tolerance_s": a.tol,
         "charades_standing_transition": eval_charades(analyze, poses, a.split, a.tol),
+        "charades_posture_frames": eval_charades_frames(analyze, poses, a.split),
         "ucf101_hand_raised": eval_ucf(analyze, poses, a.split),
         "clip_errors": errors,
         "seconds": round(time.time() - t0, 1),

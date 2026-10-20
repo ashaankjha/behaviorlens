@@ -111,6 +111,7 @@ All thresholds are engineering heuristics, adjustable under **Analysis controls*
   - *Standing-like*: hips extended (≥ 150°), both thighs pointing down (drop ≥ 0.3), torso within 35° of vertical, and knees straight if the ankles are visible.
   - Shoulders, hips and knees must be visible **and inside the frame**. Upper-body visibility alone never implies sitting.
 - **`sustained_standing`** (optional, P1): a standing-like run of at least 2 s.
+- **Camera motion**: landmarks are image coordinates, so a pan, tilt or zoom changes apparent posture. Global background motion between sampled frames is estimated with OpenCV (person region excluded), and frames where the camera moves faster than 0.2 frame widths/s, 10°/s or 10 % zoom/s are **unobservable for posture**. Hand rules are not masked. Shown as a grey *Camera motion* lane on the timeline and as a warning; see [`docs/VALIDATION.md`](docs/VALIDATION.md#camera-motion).
 
 v0.2's posture thresholds were chosen on real video (Charades) and checked on a held-out half; see [`docs/VALIDATION.md`](docs/VALIDATION.md) for the numbers and limits. v0.1's synthetic-tuned thresholds caught fewer than half of real seated frames.
 
@@ -135,6 +136,7 @@ src/behaviorlens/
   video_io.py                upload validation, probing, frame sampling, H.264 previews
   pose.py                    MediaPipe wrapper and model download
   features.py                per-frame geometry and tri-state candidate states
+  camera_motion.py           global camera-motion estimate per sampled frame (pans, zooms)
   event_rules.py             temporal rules producing events with evidence
   pipeline.py                session creation, analysis orchestration, pose cache, overlay
   storage.py                 SQLite persistence, review actions, audit log
@@ -165,6 +167,7 @@ Design notes:
 - Data at rest is **not encrypted by the app**. Put `data/` (or the Docker volume) on an OS-encrypted disk (LUKS, FileVault, BitLocker) and restrict its permissions; see [`docs/regulatory/cybersecurity.md`](docs/regulatory/cybersecurity.md). A schema upgrade leaves a `behaviorlens.db.pre-vN-backup` copy in `data/`, which **Delete session** does not touch.
 - Exports never include video, file paths, source filenames (which may contain names) or images. They carry a "not clinically validated" warning and a `data_mode` (`synthetic` or `video_inference`).
 - One subject per analysis. Up to 4 people are detected and tracked across frames by position continuity (no recognition). Events are computed for one subject track, chosen automatically or by the reviewer under **Analysis controls**. A warning is shown when several people are tracked. Track IDs can split under fast camera pans and after more than 2 s out of view (see `docs/VALIDATION.md`, *Person tracking*).
+- A moving camera makes posture unobservable while it moves, so a stand-up filmed by a camera that follows the person is usually not suggested. Slow drift below the thresholds is not detected as motion.
 - 2D heuristics depend on camera angle. Side views, crouching, lunges and partial occlusion can produce *ambiguous* or *unobservable* frames, which by design yield no event.
 - Seek precision depends on the browser and video keyframes (typically within ~1 s). Previews are H.264, which Chrome, Edge, Safari and Firefox play. Some open-source Chromium builds lack H.264 decoding.
 - The synthetic demo exercises the rules and the UI. It **does not** validate real pose extraction.

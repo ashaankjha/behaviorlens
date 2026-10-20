@@ -240,3 +240,81 @@ def test_primary_person_is_the_largest_pose():
     small[:, :2] = 0.8 + (small[:, :2] - 0.5) * 0.2  # a distant second person in the corner
     assert select_primary([small, big]) is big
     assert select_primary([big, small]) is big
+
+
+# ------------------------------------------------------------ camera motion (pans, zooms)
+def with_camera(seq, moving, rate: float = 0.5):
+    """Attach camera-motion estimates: a pan of ``rate`` frame widths per second where
+    ``moving(t)`` is true, a still camera elsewhere."""
+    from behaviorlens.models import MOTION_CHANNELS, MOTION_DX, MOTION_INLIERS, MOTION_METHOD
+
+    cm = np.zeros((len(seq), MOTION_CHANNELS))
+    dt = seq.frame_period_s
+    cm[:, MOTION_DX] = [rate * dt if moving(t) else 0.0 for t in seq.timestamps_s]
+    cm[:, MOTION_INLIERS] = 0.9
+    cm[:, MOTION_METHOD] = 1
+    cm[0] = np.nan  # no previous frame
+    cm[0, MOTION_METHOD] = 0
+    seq.camera_motion = cm
+    return seq
+
+
+def pan_artifact_seq():
+    """The Charades HIOY0 pattern: seated-like landmarks while the camera is still, then the
+    camera pans for the rest of the clip and the landmarks read as standing during the pan."""
+    return make_seq(10, stand=stand_up_at(4.0, 0.4))
+
+
+def test_pan_induced_transition_is_suppressed():
+    no_motion = pan_artifact_seq()
+    assert len(of_type(detect_standing(no_motion, P, "s"), "standing_transition")) == 1  # v0.2 behaviour
+    seq = with_camera(pan_artifact_seq(), lambda t: t >= 3.8)
+    f = posture_features(seq, P)
+    assert np.all(f.state[seq.timestamps_s >= 3.8] == UNKNOWN)
+    assert of_type(detect_standing(seq, P, "s"), "standing_transition") == []
+    # The switch restores the static-camera behaviour.
+    off = RuleParams(mask_camera_motion=False)
+    assert len(of_type(detect_standing(seq, off, "s"), "standing_transition")) == 1
+
+
+def test_slow_camera_drift_does_not_mask_posture():
+    seq = with_camera(make_seq(10, stand=stand_up_at(4.0, 1.2)), lambda t: True, rate=0.1)
+    events = of_type(detect_standing(seq, P, "s"), "standing_transition")
+    assert len(events) == 1 and events[0].evidence["camera_moving_frames"] == 0
+
+
+def test_stand_up_seen_after_a_pan_still_counts():
+    # Masking removes evidence only while the camera moves: a short pan between a still
+    # seated view and a still standing view leaves both runs observable (documented limit).
+    seq = with_camera(make_seq(12, stand=stand_up_at(5.0, 0.4)), lambda t: 4.6 <= t < 5.6)
+    events = of_type(detect_standing(seq, P, "s"), "standing_transition")
+    assert len(events) == 1
+    assert events[0].evidence["camera_moving_frames"] == 5
+    assert events[0].evidence["unobservable_frames_in_transition"] >= 3
+
+
+def test_camera_motion_does_not_mask_hand_raised():
+    seq = with_camera(make_seq(8, right_up=window(2, 5)), lambda t: 2.5 <= t < 4.0)
+    events = detect_hand_raised(seq, P, "s")
+    assert len(events) == 1 and events[0].evidence["camera_moving_frames"] == 7
+
+
+def test_sequences_without_motion_data_mask_nothing():
+    seq = make_seq(10, stand=stand_up_at(4.0, 1.2))
+    assert seq.camera_motion is None
+    events = of_type(detect_standing(seq, P, "s"), "standing_transition")
+    assert len(events) == 1 and events[0].evidence["camera_moving_frames"] is None
+
+
+def test_camera_motion_is_reported_in_stats_and_warnings():
+    from behaviorlens.pipeline import analyze_pose
+
+    still = analyze_pose(with_camera(make_seq(10), lambda t: False), P, "s")
+    assert still.stats["camera_motion_available"] and still.stats["camera_moving_ratio"] == 0.0
+    assert not any("camera moved" in w for w in still.warnings)
+    panned = analyze_pose(with_camera(make_seq(10), lambda t: 2.0 <= t < 4.0), P, "s")
+    assert panned.stats["camera_moving_ratio"] == 0.2
+    assert panned.stats["camera_motion_intervals"] == [[1.8, 3.8]]
+    assert any("camera moved" in w and "20%" in w and "unobservable" in w for w in panned.warnings)
+    legacy = analyze_pose(make_seq(10), P, "s")
+    assert legacy.stats["camera_motion_available"] is False and legacy.stats["camera_moving_ratio"] is None

@@ -123,6 +123,22 @@ class RuleParams:
     max_transition_s: float = 5.0
     sustained_standing_min_s: float = 2.0
     enable_sustained_standing: bool = True
+    # Camera motion (camera_motion.py). Frames where the camera moves faster than any of
+    # these rates are unobservable for posture, since image-coordinate landmarks then mix
+    # camera and body movement. Translation is a fraction of the frame per second; scale is
+    # |log scale change| per second. Chosen on the Charades tuning split as the most sensitive
+    # setting that cost no tuning-split stand-up and added no false positive (0.15 /s, or a
+    # one-frame pad at 0.2 /s, or 5 deg/s already lost one); see docs/VALIDATION.md, "Camera motion".
+    # Hand rules are not masked: the cue is within-frame geometry, and masking changed no
+    # tuning-split clip outcome (it only split one event).
+    mask_camera_motion: bool = True
+    camera_max_translation_per_s: float = 0.2
+    camera_max_rotation_deg_per_s: float = 10.0
+    camera_max_scale_change_per_s: float = 0.1
+    # Feature-based estimates with a lower RANSAC inlier ratio are unknown (never masking).
+    camera_min_inlier_ratio: float = 0.5
+    # Moving frames are widened by this many sampled frames on each side.
+    camera_motion_pad_frames: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

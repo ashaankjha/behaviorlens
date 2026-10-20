@@ -366,6 +366,10 @@ def test_validation_cache_key_includes_model_and_fps(tmp_path, monkeypatch):
     assert len(keys) == 6
     assert lite == v.cache_path(clip, "pose_landmarker_lite@aaaaaaaaaaaa", 5.0)
     assert lite.parent == tmp_path / "validation" / "cache"
+    # Caches written before camera-motion estimation (no motion data) must never be reused.
+    from behaviorlens.camera_motion import CAMERA_MOTION_VERSION
+
+    assert lite.stem.endswith(CAMERA_MOTION_VERSION)
 
 
 def test_validation_params_reject_typos():

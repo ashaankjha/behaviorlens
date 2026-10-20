@@ -11,6 +11,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from .camera_motion import camera_moving_mask
 from .config import RuleParams
 from .models import (
     LEFT_ANKLE,
@@ -137,6 +138,7 @@ def posture_features(seq: PoseSequence, params: RuleParams) -> PostureFeatures:
 
     Requires both shoulders, hips and knees to be visible and in frame; upper-body visibility
     alone never implies sitting. Frames matching both or neither description are ambiguous.
+    Frames where the camera is moving (camera_motion.camera_moving_mask) are unobservable.
     """
     thr = params.visibility_threshold
     required = [LEFT_SHOULDER, RIGHT_SHOULDER, LEFT_HIP, RIGHT_HIP, LEFT_KNEE, RIGHT_KNEE]
@@ -177,6 +179,7 @@ def posture_features(seq: PoseSequence, params: RuleParams) -> PostureFeatures:
     state[seated & ~standing] = SEATED
     state[standing & ~seated] = STANDING
     state[~observable] = UNKNOWN
+    state[camera_moving_mask(seq, params)] = UNKNOWN
     return PostureFeatures(
         state=state,
         hip_knee_drop=np.where(observable, drop, np.nan),

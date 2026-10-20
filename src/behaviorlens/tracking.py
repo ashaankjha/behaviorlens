@@ -53,11 +53,17 @@ class MultiPoseSequence:
     sample_fps: float
     duration_s: float
     data_mode: DataMode = "video_inference"
+    # Per-frame camera motion (camera_motion.MOTION_CHANNELS); None when not estimated.
+    camera_motion: np.ndarray | None = None
 
     def __post_init__(self) -> None:
         self.timestamps_s = np.asarray(self.timestamps_s, dtype=float)
         self.frame_indices = np.asarray(self.frame_indices, dtype=int)
         self.poses = np.asarray(self.poses, dtype=float)
+        if self.camera_motion is not None:
+            self.camera_motion = np.asarray(self.camera_motion, dtype=float)
+            if len(self.camera_motion) != len(self.timestamps_s):
+                raise ValueError("camera_motion must have one row per frame")
         self.counts = np.asarray(self.counts, dtype=int)
         n = len(self.timestamps_s)
         if self.poses.ndim != 4 or self.poses.shape[0] != n or self.poses.shape[2:] != (NUM_LANDMARKS, 5):
@@ -79,8 +85,8 @@ class MultiPoseSequence:
 
     @classmethod
     def from_frames(cls, timestamps_s: ArrayLike, frame_indices: ArrayLike, frames: list[list[np.ndarray]],
-                    sample_fps: float,
-                    duration_s: float, data_mode: DataMode = "video_inference") -> "MultiPoseSequence":
+                    sample_fps: float, duration_s: float, data_mode: DataMode = "video_inference",
+                    camera_motion: np.ndarray | None = None) -> "MultiPoseSequence":
         slots = max([len(f) for f in frames] + [1])
         poses = np.full((len(frames), slots, NUM_LANDMARKS, 5), np.nan)
         for k, people in enumerate(frames):
@@ -89,14 +95,15 @@ class MultiPoseSequence:
         return cls(timestamps_s=np.asarray(timestamps_s, dtype=float),
                    frame_indices=np.asarray(frame_indices, dtype=int), poses=poses,
                    counts=np.array([len(f) for f in frames], dtype=int), sample_fps=sample_fps,
-                   duration_s=duration_s, data_mode=data_mode)
+                   duration_s=duration_s, data_mode=data_mode, camera_motion=camera_motion)
 
     @classmethod
     def from_pose_sequence(cls, seq: PoseSequence) -> "MultiPoseSequence":
         """One slot per frame: the people a single-person sequence did not keep are unknown."""
         return cls(timestamps_s=seq.timestamps_s, frame_indices=seq.frame_indices,
                    poses=seq.landmarks[:, None], counts=seq.has_pose.astype(int),
-                   sample_fps=seq.sample_fps, duration_s=seq.duration_s, data_mode=seq.data_mode)
+                   sample_fps=seq.sample_fps, duration_s=seq.duration_s, data_mode=seq.data_mode,
+                   camera_motion=seq.camera_motion)
 
     def largest_person_sequence(self) -> PoseSequence:
         """rules-v0.2 attribution: ``pose.select_primary`` in each frame, chosen independently."""
@@ -109,20 +116,24 @@ class MultiPoseSequence:
     def _sequence(self, landmarks: np.ndarray, num_people: np.ndarray) -> PoseSequence:
         return PoseSequence(timestamps_s=self.timestamps_s, frame_indices=self.frame_indices,
                             landmarks=landmarks, sample_fps=self.sample_fps, duration_s=self.duration_s,
-                            num_people=num_people, data_mode=self.data_mode)
+                            num_people=num_people, data_mode=self.data_mode, camera_motion=self.camera_motion)
 
     def save_npz(self, path: str | Path) -> None:
+        extra: dict[str, Any] = ({} if self.camera_motion is None
+                                 else {"camera_motion": self.camera_motion.astype(np.float32)})
         np.savez_compressed(path, timestamps_s=self.timestamps_s, frame_indices=self.frame_indices,
                             poses=self.poses.astype(np.float32), counts=self.counts,
                             meta=np.array([self.sample_fps, self.duration_s]),
-                            data_mode=np.array(self.data_mode))
+                            data_mode=np.array(self.data_mode), **extra)
 
     @classmethod
     def load_npz(cls, path: str | Path) -> "MultiPoseSequence":
         with np.load(path, allow_pickle=False) as d:
             return cls(timestamps_s=d["timestamps_s"], frame_indices=d["frame_indices"],
                        poses=d["poses"].astype(float), counts=d["counts"], sample_fps=float(d["meta"][0]),
-                       duration_s=float(d["meta"][1]), data_mode=_data_mode(str(d["data_mode"])))
+                       duration_s=float(d["meta"][1]), data_mode=_data_mode(str(d["data_mode"])),
+                       # Optional: caches written before camera-motion estimation lack it.
+                       camera_motion=d["camera_motion"].astype(float) if "camera_motion" in d.files else None)
 
 
 # ---------------------------------------------------------------- geometry
