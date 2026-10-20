@@ -128,15 +128,22 @@ def _get(url: str) -> bytes:
         return r.read()
 
 
+class DriveQuotaError(RuntimeError):
+    """Google Drive served an HTML page (usually "Quota exceeded") instead of the file."""
+
+
 def _download(url: str, dest: Path) -> None:
     """Stream to dest (via a .part file, so an interrupted download is never mistaken for a
     complete one)."""
     part = dest.with_suffix(dest.suffix + ".part")
     for attempt in range(5):  # Drive answers bursts with HTTP 500/429; back off and retry
         try:
-            with urllib.request.urlopen(urllib.request.Request(url, headers=UA), timeout=300) as r, \
-                    part.open("wb") as f:
-                shutil.copyfileobj(r, f, 1 << 20)
+            with urllib.request.urlopen(urllib.request.Request(url, headers=UA), timeout=300) as r:
+                if dest.suffix != ".txt" and "text/html" in (r.headers.get("content-type") or ""):
+                    # Drive's per-file "Quota exceeded" page (HTTP 200); retrying now won't help.
+                    raise DriveQuotaError(f"{dest.name}: Drive returned an HTML page (download quota?)")
+                with part.open("wb") as f:
+                    shutil.copyfileobj(r, f, 1 << 20)
             part.rename(dest)
             return
         except OSError:
@@ -324,7 +331,7 @@ def fetch_pkummd(name: str, limit: int | None, workers: int, stride: int | None 
             if not src.is_file():
                 _download(drive_file_url(*files[vid]), src)
             transcode(src, out)
-        except (OSError, subprocess.CalledProcessError) as exc:
+        except (OSError, subprocess.CalledProcessError, DriveQuotaError) as exc:
             print(f"{name} {vid}: {exc}", file=sys.stderr)
             return None
         finally:

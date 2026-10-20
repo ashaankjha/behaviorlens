@@ -178,6 +178,20 @@ def test_fresh_confirmation_set_is_the_exact_complement_of_the_evaluated_subset(
     assert f.subset_ids(ids, None, None) == ids and f.subset_ids(ids, None, None, complement=True) == []
 
 
+def test_drive_quota_page_is_rejected_not_saved_as_video(tmp_path, monkeypatch):
+    import io
+
+    f = _load("fetch_fixed_camera_datasets")
+
+    class Page(io.BytesIO):
+        headers = {"content-type": "text/html; charset=utf-8"}
+
+    monkeypatch.setattr(f.urllib.request, "urlopen", lambda *a, **k: Page(b"<title>Quota exceeded</title>"))
+    with pytest.raises(f.DriveQuotaError):
+        f._download("https://example.invalid/x", tmp_path / "0001-M.avi")
+    assert not list(tmp_path.iterdir())  # nothing (not even a .part file) left to be mistaken for a video
+
+
 def test_tune_grid_settings_expand_and_reject_typos():
     g = _load("tune_grid")
     s = g.settings({"dwell_s": [0.4, 0.8], "max_transition_s": [3, 5, 7]})
