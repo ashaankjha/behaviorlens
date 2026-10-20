@@ -56,6 +56,7 @@ Status key: ✅ implemented and verified · 🟡 implemented with a documented l
 | Missing evidence → unknown/no event | ✅ | tri-state features |
 | No emotion, intent, stereotypy, aggression or treatment features | ⛔ | not implemented by design |
 | User-directed local-video test procedure | ✅ | README, "Optional: test with your own staged clip" |
+| Staged-recording kit for intended-setting validation footage (adults only, local only, opaque IDs, no audio or metadata, double annotation with agreement, safe deletion and participant withdrawal) | 🟡 tooling verified; no recordings made yet | [`recording_kit/`](recording_kit/README.md), `scripts/ingest_staged_recordings.py`; `tests/test_recording_kit.py` (shared-format schema, filename and GPS/title metadata never stored, audio removed, actionable rejection of bad inputs, ELAN parsing, kappa/IOA, consensus and adjudication, delete and withdrawal) |
 
 ## Production-readiness controls (beyond the PRD, 2026-10-20)
 
@@ -95,7 +96,7 @@ The PRD asks for detection on staged footage of consenting adults. Charades (cro
 
 - Stand-up detection is modest on real home video (held-out recall 0.40, precision 0.40 for rules-v0.2; 0.30 and 0.50 with camera-motion masking). Most misses happen when legs are hidden. Camera-motion masking removes the pan false positives but also hides stand-ups filmed by a camera that follows the person. The remaining false positives come from partial-body framing, jitter and a second person.
 - Samples are small (10 held-out stand-ups), so the improvement over v0.1 isn't statistically conclusive.
-- Validation footage isn't from ABA settings. The README "own staged clip" procedure covers the intended camera setup.
+- Validation footage isn't from ABA settings. The README "own staged clip" procedure covers the intended camera setup, and the [staged-recording kit](recording_kit/README.md) turns staged sessions with adult volunteers into a tune/holdout dataset.
 
 ## Independent audit
 
