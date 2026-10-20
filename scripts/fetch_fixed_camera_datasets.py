@@ -98,8 +98,10 @@ PKU_ACTIONS = {
     50: "wipe face", 51: "writing",
 }
 PKU_INTERACTION = {12, 14, 16, 18, 21, 24, 26, 27}
-# 13 "hand waving" and 5 "cheer up" -> hand_raised only after viewing frames (VALIDATION.md).
-PKU_MAP = {34: "standing_transition", 33: "sitting_down", 13: "hand_raised", 5: "hand_raised"}
+# Mappings checked by viewing frames (docs/VALIDATION.md): "hand waving" raised one hand above
+# the shoulder in every viewed instance; "cheer up" did not consistently (arms overhead ~2 s,
+# ~0.5 s, or never above the shoulders), so it stays "other".
+PKU_MAP = {34: "standing_transition", 33: "sitting_down", 13: "hand_raised"}
 
 
 def vdir() -> Path:

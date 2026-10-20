@@ -164,3 +164,14 @@ def test_fixed_camera_fetch_helpers():
     assert [(e["type"], e["start_s"], e["end_s"]) for e in events] == [
         ("standing_transition", 1.0, 3.0), ("hand_raised", 4.0, 6.0), ("other", 6.667, 8.667)]
     assert subjects == 2 and events[2]["source_label"] == "handshaking"
+    # "cheer up" did not reliably raise the hands above the shoulders when viewed: stays "other"
+    cheer, single = f.parse_pku_label("5,300,330,1\n")
+    assert cheer[0]["type"] == "other" and single == 1
+
+
+def test_tune_grid_settings_expand_and_reject_typos():
+    g = _load("tune_grid")
+    s = g.settings({"dwell_s": [0.4, 0.8], "max_transition_s": [3, 5, 7]})
+    assert len(s) == 6 and {"dwell_s": 0.4, "max_transition_s": 7} in s
+    with pytest.raises(SystemExit, match="dwel_s"):
+        g.settings({"dwel_s": [1]})
