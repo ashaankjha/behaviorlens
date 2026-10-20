@@ -20,6 +20,15 @@ Synthetic tests prove the plumbing, not the detection claim (LEARNINGS M15). Run
      '{"seated_max_hip_angle_deg":0,"seated_max_knee_angle_deg":0,"seated_drop_ceiling":99,"standing_min_drop":0.6,"standing_min_hip_angle_deg":0,"dwell_s":1.0,"max_transition_s":3.0}'
    ```
    The first run computes and caches landmarks (~2.5 min on 4 cores); later runs take seconds.
+   **Fixed-camera datasets** (UTKinect-Action3D, PKU-MMD; research use only) and any dataset in the shared format (`scripts/datasets.py`):
+   ```bash
+   .venv/bin/python scripts/fetch_fixed_camera_datasets.py utkinect pkummd2
+   .venv/bin/python scripts/fetch_fixed_camera_datasets.py pkummd1 --limit 85 --stride 4   # evaluated subset
+   .venv/bin/python scripts/validate_real_video.py --split holdout --dataset charades,utkinect,pkummd1,pkummd2 --json /tmp/out.json
+   .venv/bin/python scripts/skeleton_adjudication.py /tmp/out.json   # hand_raised vs Kinect skeletons (labels aren't definitions, M41)
+   .venv/bin/python scripts/tune_grid.py --dataset charades,utkinect,pkummd1,pkummd2 --split tune --grid '{"dwell_s": [0.8, 1.0]}'
+   ```
+   First extraction of all four datasets takes ~1 h on 4 cores (PKU-MMD Phase 1 dominates).
 3. **Tuning discipline (M19).** Explore and select thresholds with `--split tune` only. Score `--split holdout` once with the chosen values. Present any holdout sweep as post-hoc sensitivity, never as the selection.
 4. **Look before you change rules (M18).** For each disagreement, extract frames at the event or annotation times with OpenCV and view them with the Read tool. Decide whether it's a rule error, an annotation gap, or a definition mismatch. Keep viewed frames in scratch and never commit them.
 5. Update `docs/VALIDATION.md` with numbers recomputed by the **production code path** (M20), counts in brackets, and Wilson intervals for small samples. Then update `docs/PRD_TRACEABILITY.md` (FR3 rows) and log any lesson with the `update-learnings` skill.
@@ -29,6 +38,7 @@ Synthetic tests prove the plumbing, not the detection claim (LEARNINGS M15). Run
 
 - **Charades `standing_transition`**: a detection is correct if it overlaps a label-154 window widened by `--tol` (default 1 s). Recall is over windows. `detections_during_sit_down` counts confusions with label 151. `recall_when_legs_observable` restricts to clips with posture observable in ≥30% of frames.
 - **UCF101 `hand_raised`**: per clip, with any event counting as positive. Class labels are a proxy: JumpingJack raises are often shorter than the 0.6 s minimum.
+- **Shared-format datasets** (`--dataset`): the same overlap rule per event type, per dataset and pooled; wrong detections are attributed to the source labels they overlap (`fp_overlapping_labels`). PKU-MMD and UTKinect `hand_raised` labels are incomplete, so use the skeleton reference.
 
 ## Known caveats
 

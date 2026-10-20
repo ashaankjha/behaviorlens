@@ -128,7 +128,7 @@ When hips or knees are not visible (furniture, desks, blankets, out of frame), p
 | **Non-ABA footage** | Validation used home (Charades) and sports (UCF101) video, not ABA session rooms. Camera placement, furniture and participants differ. |
 | **Model or sampling changes** | Thresholds are coupled to the pose model's visibility calibration. `pose_landmarker_heavy` found 0/19 stand-ups with the same thresholds; 10 fps raised recall but lowered precision. Only the default (lite, 5 fps) has been characterized. The pinned lite model is re-verified against its SHA-256 at load; a model supplied through `BEHAVIORLENS_MODEL_PATH` is not checked against the pin (its hash prefix is recorded in `model_version`). |
 | **User-adjusted thresholds** | The UI exposes sliders for visibility threshold, minimum hand-raise duration, dwell and gap bridging. Non-default values have not been validated on real video. |
-| **Small samples** | 19 annotated stand-up windows (10 held out) and 40 action clips. All intervals are wide. |
+| **Small, non-clinical samples** | Handheld home video: 19 annotated stand-up windows (10 held out) and 40 action clips. Fixed-camera lab video of adults (UTKinect-Action3D, PKU-MMD): 195 stand-ups in 506 videos, with incomplete labels and a per-video (not per-subject) split. Neither is clinical footage, and intervals on the handheld data are wide. |
 | **Seek precision** | The player re-renders about 1 s before an event; precision depends on browser and keyframes. |
 
 ### 6.5 Synthetic demo

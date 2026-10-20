@@ -22,6 +22,8 @@ sudo apt-get install -y libegl1 libgles2       # Linux: MediaPipe needs EGL even
 .venv/bin/python scripts/generate_demo.py       # regenerate synthetic sample_data/
 .venv/bin/python scripts/fetch_validation_clips.py   # real Charades/UCF101 clips -> data/validation/ (never commit)
 .venv/bin/python scripts/validate_real_video.py --split holdout   # real-video metrics (docs/VALIDATION.md)
+.venv/bin/python scripts/fetch_fixed_camera_datasets.py utkinect pkummd2   # fixed-camera data (never commit)
+.venv/bin/python scripts/validate_real_video.py --split holdout --dataset charades,utkinect,pkummd1,pkummd2
 ```
 
 In Claude Code cloud sessions, `.claude/hooks/session-start.sh` does the setup automatically.
