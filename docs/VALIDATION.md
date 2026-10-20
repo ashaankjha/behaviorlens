@@ -529,3 +529,24 @@ Pooled tune split under Amendment 1: **283 videos, 80 `standing_transition` wind
 | *S + merge* | 0.78 (62/80) | 0.65 (62/96) | 34 | 0.705 | 1/9, 1/2 | 4/7, 4/4 | 13/14, 13/18 | 44/50, 44/72 |
 
 (Each row is recall then precision. The italic rows are grid rows shown for context; they are not selections.) The other ties differ only in the hip or knee threshold, or in a ceiling of 0.6 that buys one stand-up for four false positives. **Track merging adds nothing on the tune half**: no tune stand-up depends on a fragmented track, and it adds one Charades false positive (reviewed below). **The seated change does not alter Charades tune** (1/9, 1/1 either way). This repeats the exploratory lead on the reduced tune set (0.629 → 0.725 on the full Phase 2 tune set), which is expected, since it is the same lever chosen on overlapping data.
+
+### Phase 3 held-out half (third use, scored once for S and C)
+
+Holdout under Amendment 1: Charades 10, UTKinect 13, PKU-MMD P1 18 and P2 57 stand-up windows. 95 % Wilson intervals in brackets.
+
+| Holdout | Recall | Precision | FP | Sit-down conf. | F1 | `hand_raised` label F1 |
+|---|---|---|---|---|---|---|
+| C rules-v0.3 | 0.63 (62/98) [0.53–0.72] | 0.55 (62/113) [0.46–0.64] | 51 | 5 | 0.588 | 0.112 |
+| **S** | **0.74 (73/98) [0.65–0.82]** | **0.68 (73/108) [0.58–0.76]** | **35** | 3 | **0.709** | 0.112 |
+| *C + merge (post-hoc, not selected)* | 0.64 (63/98) | 0.55 (63/114) | 51 | 5 | 0.594 | 0.118 |
+
+| Per dataset (recall · precision) | Charades | UTKinect | PKU-MMD P1 | PKU-MMD P2 |
+|---|---|---|---|---|
+| C | 2/10 · 2/5 | 10/13 · 10/11 | 11/18 · 11/15 | 39/57 · 39/82 |
+| S | 2/10 · 2/5 | 10/13 · 10/11 | 15/18 · 15/18 | 46/57 · 46/74 |
+
+**The tune gain transferred to the holdout**: +11 stand-ups and −16 false positives, with the recall and precision intervals now barely overlapping. This differs from Phase 2, whose temporal-parameter grid did not transfer (M43). All of the change comes from PKU-MMD (frontal, hip-height camera). **Charades is unchanged on both splits** (holdout 2/10, 2/5; tune 1/9, 1/1): with `seated_max_drop` 0.45 the extra seated frames come from frontal, foreshortened thighs, which the elevated handheld Charades views rarely produce. On this evidence one threshold set serves both geometries. The caveat is that Charades has only 19 stand-ups and mostly unobservable legs, so "no change there" is weak evidence either way. UTKinect s10_e01 (drop ≈ 0.5 at the ceiling) is still missed, as expected with `seated_drop_ceiling = 0.5`.
+
+**Disagreements viewed (scratch only, never committed).** S's 4 new held-out false positives: **3 rule errors on people seated and still** (P1 0027, P2 A12N07, P2 A24N07). These are the same failure class as the earlier frontal seated false positives; S does not create a new one. The fourth (P1 0007, 65.0–66.2 s) precedes a **real, unlabelled rise** at about 67 s. Sampled new hits (A11N12, the miss diagnosed in Phase 2, plus P1 0013, 0043, 0077) are clear frontal stand-ups.
+
+**Track merging fails the H-03 check (adoption condition 4).** Merging is not part of S, but it was in the grid and is the M44 lever, so it was reviewed. On the holdout (post-hoc) it recovers exactly the motivating miss, UTKinect s03_e01 (10 → 11 of 13), and changes nothing else. On Charades (all 126 videos) it joins tracks in 49 videos and adds one stand-up false positive (6HR54, 13.8–14.8 s) and hand detections in 6 videos. **Frame review of 6HR54: the merged subject stitches two people.** A seated woman and a standing girl at a table are each detected only intermittently (usually one of the two per frame), and the frame-to-frame tracker already alternates each track between them (T4 and T5 both switch person, 11–18 s). Merging then joins T4 and T5 into the subject track, and the seated frames of one person plus the standing frames of the other produce a stand-up nobody performed: exactly the K5CRM hazard. The root cause is in rules-v0.3 tracking itself (identity alternation when MediaPipe returns one of two nearby people per frame); merging amplifies it by making such a track the subject. **Do not enable `merge_fragments` on multi-person or handheld footage.** A merge restricted to clips that never show two people at once would still be blind to this case, because here the two people are rarely detected in the same frame.
