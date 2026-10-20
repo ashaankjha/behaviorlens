@@ -34,6 +34,7 @@ The project owner wants parallel cloud sessions spawned **whenever necessary**. 
      - Re-run the combined validation after merging, because features interact.
    - "Work autonomously; don't ask questions. End with a concise summary."
 3. Arm a check-in with `send_later` (about 45 min for an audit or experiment). Children don't report back when they finish cleanly.
+   - **Waiting on something external (downloads, quotas, long jobs) must cost no tokens** (LEARNINGS M62). Tell children to wait inside ONE background shell loop that retries with back-off and exits only when the data is complete or a deadline passes, never with hourly `send_later`/trigger self-wake-ups. Ask children to `send_message` the parent when they finish, and keep parent check-ins few (one long fallback, not an hourly series).
 
 ## Monitor and integrate
 
