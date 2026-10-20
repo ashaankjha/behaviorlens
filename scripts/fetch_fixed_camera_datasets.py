@@ -28,10 +28,17 @@ committed or redistributed):
   internally and validation samples at 5 fps, so neither change affects the landmarks
   materially.
 
+* pkummd1_fresh: the PKU-MMD Phase 1 front-view videos NOT in the `--limit/--stride` subset
+  (the complement of `pkummd1 --limit 85 --stride 4` when run as
+  `pkummd1_fresh --limit 85 --stride 4`). Same source, labels and transcoding as pkummd1,
+  stored as its own dataset (data/validation/pkummd1_fresh/), so it can be held back as a
+  one-shot confirmation set (docs/VALIDATION.md, "Frontal posture and track merging").
+
 Usage:
     python scripts/fetch_fixed_camera_datasets.py utkinect pkummd1 pkummd2 [--limit N] [--stride N] [--workers 4]
 
-The evaluated PKU-MMD Phase 1 subset is `pkummd1 --limit 85 --stride 4` (see docs/VALIDATION.md).
+The evaluated PKU-MMD Phase 1 subset is `pkummd1 --limit 85 --stride 4` (see docs/VALIDATION.md);
+its complement is `pkummd1_fresh --limit 85 --stride 4`.
 """
 
 from __future__ import annotations
@@ -279,8 +286,19 @@ def probe(path: Path) -> tuple[float, float]:
     return float(num) / float(den), float(info["format"]["duration"])
 
 
+def subset_ids(labelled: list[str], limit: int | None, stride: int | None,
+               complement: bool = False) -> list[str]:
+    """Union of the first `limit` and every `stride`-th id (sorted); with `complement`, every
+    other labelled id. No filter at all selects everything (and its complement is empty)."""
+    chosen = set(labelled)
+    if limit or stride:
+        chosen = set(labelled[:limit or 0]) | set(labelled[::stride] if stride else [])
+    return sorted(set(labelled) - chosen if complement else chosen)
+
+
 def fetch_pkummd(name: str, limit: int | None, workers: int, stride: int | None = None) -> None:
-    cfg = PKU[name]
+    complement = name.endswith("_fresh")
+    cfg = PKU[name.removesuffix("_fresh")]
     raw = raw_dir(name)
     lab_dir = raw / "labels"
     if not lab_dir.is_dir():
@@ -291,9 +309,9 @@ def fetch_pkummd(name: str, limit: int | None, workers: int, stride: int | None 
     files = {m.group(1): ids for n, ids in list_drive_folder(*cfg["rgb_folder"]).items()
              if (m := cfg["name"].match(n))}
     labelled = sorted(v for v in files if f"{v}-M" in label_files)
-    vids = labelled
-    if limit or stride:  # union of the first `limit` and every `stride`-th video (sorted ids)
-        vids = sorted(set(labelled[:limit or 0]) | set(labelled[::stride] if stride else []))
+    vids = subset_ids(labelled, limit, stride, complement)
+    if complement and not (limit or stride):
+        sys.exit(f"{name}: give the --limit/--stride of the subset whose complement you want")
     dest = vdir() / name
     (dest / "videos").mkdir(parents=True, exist_ok=True)
 
@@ -317,7 +335,8 @@ def fetch_pkummd(name: str, limit: int | None, workers: int, stride: int | None 
         list(ex.map(one, vids))
     records = []
     # every labelled video on disk, so successive subset runs accumulate
-    for vid in (v for v in labelled if (dest / "videos" / f"{v}.mp4").is_file()):
+    keep = set(vids) if complement else set(labelled)  # never let a fresh set absorb used videos
+    for vid in (v for v in labelled if v in keep and (dest / "videos" / f"{v}.mp4").is_file()):
         fps, duration = probe(dest / "videos" / f"{vid}.mp4")
         events, subjects = parse_pku_label(label_files[f"{vid}-M"].read_text())
         records.append({"video_id": vid, "video": f"videos/{vid}.mp4", "fps": fps,
@@ -328,7 +347,7 @@ def fetch_pkummd(name: str, limit: int | None, workers: int, stride: int | None 
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
-    ap.add_argument("datasets", nargs="+", choices=["utkinect", "pkummd1", "pkummd2"])
+    ap.add_argument("datasets", nargs="+", choices=["utkinect", "pkummd1", "pkummd2", "pkummd1_fresh"])
     ap.add_argument("--limit", type=int, help="first N videos per PKU-MMD phase (for a quick subset)")
     ap.add_argument("--stride", type=int, help="every N-th PKU-MMD video (sorted ids); unites with --limit")
     ap.add_argument("--workers", type=int, default=4)

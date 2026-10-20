@@ -169,6 +169,15 @@ def test_fixed_camera_fetch_helpers():
     assert cheer[0]["type"] == "other" and single == 1
 
 
+def test_fresh_confirmation_set_is_the_exact_complement_of_the_evaluated_subset():
+    f = _load("fetch_fixed_camera_datasets")
+    ids = [f"{i:04d}" for i in range(359)]
+    used, fresh = f.subset_ids(ids, 85, 4), f.subset_ids(ids, 85, 4, complement=True)
+    assert len(used) == 153 and len(fresh) == 206  # the evaluated 153-of-359 subset (VALIDATION.md)
+    assert not set(used) & set(fresh) and sorted(used + fresh) == ids
+    assert f.subset_ids(ids, None, None) == ids and f.subset_ids(ids, None, None, complement=True) == []
+
+
 def test_tune_grid_settings_expand_and_reject_typos():
     g = _load("tune_grid")
     s = g.settings({"dwell_s": [0.4, 0.8], "max_transition_s": [3, 5, 7]})
