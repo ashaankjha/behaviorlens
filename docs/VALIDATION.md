@@ -5,6 +5,8 @@ The synthetic demo only exercises the rules. This report covers **real MediaPipe
 > These numbers come from small public research samples (19 annotated stand-ups and 40 action clips). They are engineering evidence about the heuristics, **not clinical validation**.
 
 > **Current shipped version: rules-v0.3** (person tracking on; camera motion estimated and shown, masking off by default). Held-out stand-up recall 0.20 (2/10), precision 0.40 (2/5), 3 false positives, against rules-v0.2's 0.40, 0.40 and 6. See *rules-v0.3: tracking + camera motion combined*. The sections below are in chronological order.
+>
+> **Fixed-camera evidence (2026-10-20):** on 506 fixed-camera videos of adults (UTKinect-Action3D, PKU-MMD; 195 stand-ups), rules-v0.3 stand-up recall is 0.71 (138/195), precision 0.56 (138/248); held-out half 0.65 (72/110), 0.55 (72/130). `hand_raised` precision 0.88 against an independent Kinect-skeleton reference. Camera-motion masking is inert on fixed cameras. See *Fixed-camera datasets*.
 
 ## Data
 
@@ -348,7 +350,8 @@ python scripts/validate_real_video.py --split holdout --params '{"mask_camera_mo
 
 ## How to improve these numbers
 
-- Record staged clips in the intended setting (front-on camera, full body visible) using the README procedure, and add them to `data/validation/` with a ground-truth CSV.
+- ~~Find fixed-camera, full-body footage.~~ Done with UTKinect-Action3D and PKU-MMD (see *Fixed-camera datasets*). Record staged clips in the intended clinic-like setting with the README procedure and add them in the shared format (`scripts/datasets.py`).
+- Next pre-registered cycle: seated thresholds for frontal views (`seated_max_drop` 0.45 looked strong on tune only) and track fragmentation for single-person videos (UTKinect s03_e01).
 - ~~Try `pose_landmarker_full`/`heavy` and 10 fps.~~ Done (see *Pose model comparison*): neither larger model helps with the current thresholds, and 10 fps doesn't help `hand_raised`. Re-tuning the temporal parameters for 10 fps on the tune split is the remaining lead.
 - ~~Add person tracking.~~ Done (see *Person tracking*).
 - ~~Add camera-motion detection.~~ Done (see *Camera motion*).
@@ -356,7 +359,9 @@ python scripts/validate_real_video.py --split holdout --params '{"mask_camera_mo
 
 ## Fixed-camera datasets (UTKinect-Action3D, PKU-MMD)
 
-Run date: 2026-10-20. *Work in progress: this section is completed below once the runs finish.*
+Run date: 2026-10-20. **Question:** the PRD's intended setting is a **fixed camera with the full body visible**, but all earlier evidence came from handheld home video (19 Charades stand-ups). How do rules-v0.3 perform on fixed-camera, temporally labelled footage of consenting adults, and does camera-motion masking matter there?
+
+**Answer in one paragraph.** On 506 fixed-camera videos (195 stand-ups), shipped rules-v0.3 find **0.71 of stand-ups (138/195) [0.64–0.77] with precision 0.56 (138/248) [0.49–0.62]**; on the held-out half 0.65 (72/110) and 0.55 (72/130). That is far above Charades (0.16 recall), because legs are observable (median posture observability 0.91–0.94 against 0.20). Camera-motion masking is **exactly inert** on these cameras (no frame moving; B ≡ A and D ≡ C to the count). `hand_raised`, scored against an independent Kinect-skeleton reference, reaches **precision 0.88 and recall ≥ 0.79** (held-out pooled; recall is a lower bound, see below). The pre-registered Phase 2 grid found **no setting that improves the held-out half** (F1 0.580 → 0.585); the largest remaining stand-up lever is the **seated thresholds for frontal views**, which the grid deliberately did not include.
 
 ### Phase 2 pre-registration (written before any tune-split result on the new data was viewed)
 
@@ -371,3 +376,115 @@ Run date: 2026-10-20. *Work in progress: this section is completed below once th
 > **Objective.** Highest pooled-tune `standing_transition` F1 (micro, from pooled counts). **Guard:** pooled-tune `hand_raised` F1 against labels must not fall more than 0.02 below rules-v0.3's. **Ties** (F1 within 0.005): fewer pooled-tune false positives, then fewest parameters changed from rules-v0.3, then the value closest to rules-v0.3.
 >
 > **Holdout.** Score the selected setting and rules-v0.3 on the pooled holdout **once**, per dataset and pooled, with Wilson intervals. The selected setting is reported as a *rules-v0.4 candidate*; `config.py` defaults are not changed here.
+
+(This rule was committed in `1972765`, before any tune-split result on the new data was computed.)
+
+### Data
+
+| Dataset | Camera | Videos used | `standing_transition` | `sitting_down` | `hand_raised` | Source labels and mapping |
+|---|---|---|---|---|---|---|
+| **UTKinect-Action3D** (Xia, Chen & Aggarwal, CVPRW 2012) | fixed Kinect v1, 640×480 | 20 (10 adults × 2) | 20 | 20 | 20 | standUp, sitDown, waveHands → `hand_raised`; walk, pickUp, carry, throw, push, pull, clapHands → `other` |
+| **PKU-MMD Phase 2** (Liu et al., 2017), middle (front) view | fixed Kinect v2, 1080p → 960×540 | 333 of 333 | 107 | 90 | 26 | 34 standing up, 33 sitting down, 13 hand waving → `hand_raised`; the other 48 actions → `other` (incl. 5 *cheer up*, see below) |
+| **PKU-MMD Phase 1**, middle view, **subset** | fixed Kinect v2 | 153 of 359 | 68 | 69 | 63 | as Phase 2 |
+| Charades sample (existing) | handheld | 126 | 19 | 20 | – | labels 154 / 151 |
+
+All data is downloaded into gitignored `data/validation/<dataset>/` in the shared format of `scripts/datasets.py` (one `annotations.json` per dataset; schema validation, sha1 split on `dataset:video_id`; Charades keeps its bare-id legacy split so the v0.3 tables reproduce exactly). **Videos, frames, skeletons and landmark caches are never committed.** Both datasets are **academic / research use only** (PKU-MMD: CC BY-NC 4.0). Cite: Xia L., Chen C.-C., Aggarwal J.K., *View invariant human action recognition using histograms of 3D joints*, CVPRW 2012; Liu C., Hu Y., Li Y., Song S., Liu J., *PKU-MMD: A Large Scale Benchmark for Continuous Multi-Modal Human Action Understanding*, arXiv:1703.07475, 2017.
+
+```bash
+python scripts/fetch_fixed_camera_datasets.py utkinect pkummd2       # ~1.8 GB + ~7.5 GB downloaded, ~1 h with transcoding
+python scripts/fetch_fixed_camera_datasets.py pkummd1 --limit 85 --stride 4   # the evaluated Phase 1 subset
+python scripts/validate_real_video.py --split holdout --dataset charades,utkinect,pkummd1,pkummd2 --json out.json
+python scripts/skeleton_adjudication.py out.json                     # needs the raw Kinect skeletons in data/raw/
+python scripts/tune_grid.py --dataset charades,utkinect,pkummd1,pkummd2 --split tune --grid '{"dwell_s": [0.8, 1.0]}'
+```
+
+**How the data was obtained, and what failed.**
+- *UTKinect timing.* The site says "30 f/s … final frame rate about 15 f/sec" and frame numbers have gaps. Frame numbers are always even, and the zip's per-file modification times are linear in frame number at 58–60 numbers/s in all 20 sequences (residual ≤ 2.5 s, the zip timestamp resolution). So capture is 30 fps with the counter advancing by 2: **t = (frame − first frame) / 60**, ~13 fps effective. Viewing frames confirms it: sit-down and stand-up label windows line up with the motion to within a frame or two. (A first physical estimate from the skeleton, peak hip velocity, had favoured 30 numbers/s; the timestamps settled it.) Each sequence became a constant 30 fps MP4 in which each recorded image is held until the next recorded frame number (ffmpeg concat with per-frame durations), so video time equals capture time; untracked gaps show a frozen image. One duplicate file (`colorImg2040 - Copy.jpg`) is skipped.
+- *PKU-MMD access.* The Phase 1 Google Drive link on the project page returns 401 without a `resourcekey`; the key is published on the mirror page (`http://39.96.165.147/Projects/PKUMMD/PKU-MMD.html`). Files download directly from `drive.usercontent.google.com` (no `gdown` needed; Drive answered a few bursts with HTTP 500, handled by retries). Labels need `7z`.
+- *PKU-MMD Phase 1 is a subset.* Front-view AVIs are ~98 MB each (~35 GB for 359), more than the session's free disk, so each is transcoded to 960×540 at 10 fps and deleted. Transcoding 1080p cost ~2.5 CPU-min per video; to stay within a sane time budget the run was stopped at a deterministic subset: the first 85 videos plus every 4th of the sorted list (153 videos, all subjects represented). Pose models resize to ≤ 256 px internally and validation samples at 5 fps, so neither change should affect landmarks materially.
+- *Mappings checked by viewing frames* (scratch only, never committed): UTKinect *waveHands* is both arms swung in large overhead arcs, and the Kinect skeleton has a wrist above the shoulder continuously for ≥ 0.83 s in every one of the 20 windows (median fraction of the window 0.83) → `hand_raised`. PKU-MMD *hand waving* raised one hand above the shoulder for > 0.6 s in all 6 viewed instances (3 per phase) → `hand_raised`. PKU-MMD *cheer up* did **not** consistently (arms overhead ~2 s, ~0.5 s, or never above the shoulders in 3 viewed) → `other`. Stand-up/sit-down windows matched the motion in all viewed instances; PKU-MMD Phase 2 windows are tight (often ~0.5 s).
+- *Split caveat.* The split is per video, as specified, so the same subject appears in both halves (UTKinect: the subject's two sequences; PKU-MMD: 13–66 subjects across many sequences). The rules have few parameters, so leakage risk is small, but it is not a subject-independent test.
+
+### Candidates A–D on the new data (measurement, no threshold change)
+
+Same pre-registered candidates as *rules-v0.3*: **A** v0.2 attribution, masking off · **B** v0.2 attribution + masking · **C** tracking, masking off (**shipped rules-v0.3**) · **D** tracking + masking. `pose_landmarker_lite`, 5 fps, `--tol 1.0`. `standing_transition`, 95 % Wilson intervals in brackets:
+
+| Dataset | Split | A | C (rules-v0.3) | B / D |
+|---|---|---|---|---|
+| UTKinect | holdout (13 videos) | recall 0.85 (11/13) [0.58–0.96], precision 0.92 (11/12) | recall 0.77 (10/13) [0.50–0.92], precision 0.91 (10/11) [0.62–0.98] | B = A, D = C |
+| UTKinect | all (20) | 0.75 (15/20), 0.94 (15/16) | 0.65 (13/20) [0.43–0.82], 0.93 (13/14) [0.69–0.99] | B = A, D = C |
+| PKU-MMD P1 | holdout (79) | 0.57 (23/40), 0.62 (23/37) | 0.57 (23/40) [0.42–0.71], 0.62 (23/37) [0.46–0.76] | B = A, D = C |
+| PKU-MMD P1 | all (153) | 0.66 (45/68), 0.60 (45/75) | 0.66 (45/68) [0.54–0.76], 0.61 (45/74) [0.49–0.71] | B = A, D = C |
+| PKU-MMD P2 | holdout (168) | 0.68 (39/57), 0.48 (39/82) | 0.68 (39/57) [0.56–0.79], 0.48 (39/82) [0.37–0.58] | B = A, D = C |
+| PKU-MMD P2 | all (333) | 0.75 (80/107), 0.50 (80/160) | 0.75 (80/107) [0.66–0.82], 0.50 (80/160) [0.42–0.58] | B = A, D = C |
+| **Fixed cameras pooled** | holdout (260) | 0.69 (73/110), 0.56 (73/131) | **0.65 (72/110) [0.56–0.74], 0.55 (72/130) [0.47–0.64]** | B = A, D = C |
+| **Fixed cameras pooled** | all (506) | 0.72 (140/195), 0.55 (140/251) | **0.71 (138/195) [0.64–0.77], 0.56 (138/248) [0.49–0.62]** | B = A, D = C |
+| Charades | holdout | 0.40 (4/10), 0.40 (4/10) | 0.20 (2/10), 0.40 (2/5) | B 3/10, 3/6 · D 2/10, 2/4 |
+| **All four pooled** | tune (311) | 0.72 (68/94), 0.56 (68/122), F1 0.630 | 0.71 (67/94), 0.56 (67/119), F1 0.629 | B = A, D = C |
+| **All four pooled** | holdout (321) | 0.64 (77/120), 0.55 (77/141), F1 0.590 | 0.62 (74/120) [0.53–0.70], 0.55 (74/135) [0.46–0.63], F1 0.580 | B 0.591, D 0.583 |
+
+The Charades rows reproduce the *rules-v0.3* table exactly (through the new `--dataset` path as well as the legacy one). Confusions with sitting down: 11 of 248 C detections (all splits), 0 on Charades.
+
+**Observability.** Median share of frames where posture is observable: UTKinect 0.76, PKU-MMD 0.91–0.93, Charades 0.20 (C). On fixed, full-body footage most stand-ups are observable (`recall_when_legs_observable` ≈ recall), so the remaining misses are classification errors, not missing evidence.
+
+**Camera motion.** The estimator reports **no moving frame in any of the 506 fixed-camera videos** (mean, median and max `camera_moving_ratio` = 0.0), and B/D are identical to A/C to the count on all three fixed-camera datasets in every split. Masking is inert when the camera is fixed, as it should be; it only acts on Charades.
+
+**Tracking on single-person video.** Tracking (C) costs 2 of 20 UTKinect stand-ups against A, and ties on PKU-MMD. In UTKinect s03_e01 (one person, fixed camera) the person is split into four tracks across untracked gaps; the subject track chosen (22–66 s) excludes the stand-up at ~10 s, so those frames are unobservable. The largest-person sequence shows a clear seated run before the stand-up. Track fragmentation, not posture, causes this miss.
+
+#### `hand_raised`
+
+Against the action labels, `hand_raised` looks terrible on PKU-MMD (C, all: 103/109 label windows found, but 1,801 detections, F1 0.15). Visual review shows why: *drink water*, *taking a selfie*, *put on a hat*, *wear jacket*, *brushing hair*, *make a phone call* and *salute* all put a hand above the shoulder for ≥ 0.6 s, which is the PRD's definition. UTKinect labels only one segment per action (in s09_e02 the subject waves overhead from 42 s to 72 s, but only 70.8–73.5 s is labelled). **Labels are not operational definitions here (M18).**
+
+Both datasets ship **Kinect skeletons** recorded by a separate depth sensor. `scripts/skeleton_adjudication.py` derives reference windows where the rule's definition holds in 3D (either wrist ≥ 0.5 head units above its shoulder for ≥ 0.6 s, gaps ≤ 0.4 s bridged; single-subject videos only) and scores detections against them:
+
+| Dataset | Split | C recall (skeleton windows) | C precision | A recall | A precision |
+|---|---|---|---|---|---|
+| UTKinect | all (20) | 0.89 (48/54) [0.78–0.95] | 0.89 (50/56) [0.79–0.95] | 0.94 (51/54) | 0.90 (53/59) |
+| PKU-MMD P1 | all (121 single-subject) | 0.83 (857/1028) [0.81–0.86] | 0.89 (885/998) [0.87–0.91] | 0.86 | 0.89 |
+| PKU-MMD P2 | all (333) | 0.73 (580/800) [0.69–0.76] | 0.87 (575/663) [0.84–0.89] | 0.74 | 0.86 |
+| **Pooled** | **holdout (248)** | **0.79 (821/1038) [0.77–0.82]** | **0.88 (835/946) [0.86–0.90]** | – | – |
+
+**The reference is noisy, so read these as bounds.** Frame review of sampled disagreements:
+- Detections the skeleton calls false (4 viewed): all borderline hand-at-head poses (drinking, phone at the ear, checking a watch with the arm raised), where either answer is defensible. True precision is likely ≥ 0.88.
+- Skeleton windows without a detection (12 viewed, before and after a fix): the first version counted bending (sitting down, picking up) as "raised", because bending collapses the head-to-shoulder height; it now uses each video's median head unit. After the fix, most sampled misses were still **skeleton errors on seated or bent people** (hands at the chest, at the feet or at the mouth); one was a real MediaPipe miss (an arm overhead while taking off a jacket). **Recall is therefore a lower bound.**
+
+### Held-out disagreements reviewed visually (`standing_transition`, C)
+
+| Sample | Finding |
+|---|---|
+| PKU-MMD P2, 6 false positives | **2 annotation gaps** (real stand-ups at the start of a sequence or between scripted actions with no *standing up* label: A25N11, A23N11); **4 rule errors on seated people**, 2 of them turning sideways on a swivel chair (side view), 2 seated frontally and still. |
+| PKU-MMD P1, 4 false positives | **2 rises from the floor after the scripted *falling*** (a real transition, labelled *falling*, not *standing up*: a definition gap); 2 rule errors on seated people. |
+| PKU-MMD P2, 4 misses | All clear frontal, full-body stand-ups. Diagnosis (A11N12): seated frames have hip angle 146–149°, hip-to-knee drop 0.35–0.44 and knee angle 133–139°, each **just outside** the v0.2 seated thresholds (≤ 140°, ≤ 0.35, ≤ 130°) that were chosen on elevated Charades views; seated frames read as *ambiguous*, so no seated dwell precedes the stand-up. |
+| UTKinect, 3 misses and the 1 false positive (holdout) | s03_e01: track fragmentation (above). s10_e01: the same seated ambiguity (hip angle 141–146°, and a hip-to-knee drop of ≈ 0.5 that reaches `seated_drop_ceiling`). s05_e01 not diagnosed. The only UTKinect "false positive" (s09_e01, 16.0–16.6 s) is a **real, unlabelled stand-up**: the subject sits and stands twice, and only the second is labelled (detected separately at 20 s). With it, UTKinect adjudicated precision is 11/11 (holdout) and 14/14 (all 20 videos). |
+
+The authoring agent did this adjudication; treat adjudicated counts as indicative.
+
+### Phase 2: selection on the pooled tune split (pre-registered above)
+
+The pooled tune split has **94** `standing_transition` windows (≥ 25), so Phase 2 ran. All 96 settings passed the `hand_raised` guard (label F1 varies by < 0.002). Highest pooled-tune F1 = 0.667, reached by four settings; the tie-break (fewest tune false positives, then fewest changes) selects:
+
+> **rules-v0.4 candidate: `dwell_s = 1.0`, `max_transition_s = 7`, `visibility_threshold = 0.4`, `mask_camera_motion = false`** (all else rules-v0.3). Tune: recall 0.72 (68/94), precision 0.62 (68/110), F1 0.667, against rules-v0.3's 0.71, 0.56, 0.629.
+
+**Held-out half, scored once:**
+
+| | Pooled recall | Pooled precision | FP | Sit-down conf. | F1 | Charades | UTKinect | PKU-MMD P1 | PKU-MMD P2 |
+|---|---|---|---|---|---|---|---|---|---|
+| rules-v0.3 | 0.62 (74/120) [0.53–0.70] | 0.55 (74/135) [0.46–0.63] | 61 | 6 | 0.580 | 2/10, 2/5 | 10/13, 10/11 | 23/40, 23/37 | 39/57, 39/82 |
+| **v0.4 candidate** | 0.60 (72/120) [0.51–0.68] | 0.57 (72/126) [0.48–0.65] | 54 | 3 | 0.585 | 4/10, 4/9 | 10/13, 10/11 | 22/40, 22/34 | 36/57, 36/72 |
+
+`hand_raised` is unchanged (skeleton reference, holdout: recall 0.793 vs 0.791, precision 0.881 vs 0.883).
+
+**Verdict: the tune gain did not transfer.** Held-out F1 is flat (+0.005): 7 fewer false positives and 3 fewer sit-down confusions for 2 fewer stand-ups, all well inside the intervals. Charades gains 2 held-out hits but had lost its one tune hit under the same setting, which is noise at n = 10. **This does not justify changing the defaults**; it is recorded as the candidate the pre-registered rule produced. The temporal and visibility parameters are not where the remaining error is.
+
+### Exploratory (tune split only, not a selection, holdout untouched)
+
+Because the frame review pointed at the seated thresholds, an 8-setting sweep over `seated_max_drop` {0.35, 0.45} × `seated_max_hip_angle_deg` {140, 148} × `seated_max_knee_angle_deg` {130, 140} was run on the **pooled tune split only**: `seated_max_drop = 0.45` raises pooled-tune F1 from 0.629 to **0.725** (recall 75/94, precision 75/113), with gains on both PKU-MMD phases and UTKinect and no change on Charades tune (1/9). This is a **lead for the next pre-registered cycle**, not evidence: it was chosen after looking at errors, and the holdout has deliberately not been scored with it.
+
+### Limitations
+
+- Fixed-camera data is lab footage of adults performing scripted actions (Kinect labs in Austin and Beijing), not ABA sessions; people are small in PKU-MMD frames (about a third of the frame height).
+- Splits are per video, not per subject (see *Data*).
+- PKU-MMD Phase 1 is a 153-of-359 subset.
+- Labels are incomplete for stand-ups (unlabelled rises at sequence starts and after *falling*), so raw precision underestimates; the skeleton reference for `hand_raised` is itself noisy for seated or bent people, so its recall is a lower bound.
+- All adjudication was done by the authoring agent.
+- **This is engineering evidence, not clinical validation.**
