@@ -12,6 +12,7 @@ calibrated probability.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 import numpy as np
 
@@ -189,7 +190,7 @@ def detect_standing(seq: PoseSequence, params: RuleParams, session_id: str) -> l
     return events
 
 
-def observability_stats(seq: PoseSequence, params: RuleParams) -> dict:
+def observability_stats(seq: PoseSequence, params: RuleParams) -> dict[str, Any]:
     """Fraction of frames in which each rule had enough landmark evidence."""
     n = max(len(seq), 1)
     hands = hand_raise_features(seq, params).combined
@@ -208,7 +209,7 @@ def detect_all(seq: PoseSequence, params: RuleParams, session_id: str) -> list[E
     return sorted(events, key=lambda e: (e.start_s, e.event_type))
 
 
-def _event(session_id: str, event_type: str, start: float, end: float, evidence: dict,
+def _event(session_id: str, event_type: str, start: float, end: float, evidence: dict[str, Any],
            seq: PoseSequence) -> Event:
     return Event(
         session_id=session_id,

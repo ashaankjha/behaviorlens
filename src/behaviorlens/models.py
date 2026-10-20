@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import math
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Literal
+from pathlib import Path
+from typing import Any, Literal, cast, get_args
 
 import numpy as np
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -62,6 +64,10 @@ class PoseSequence:
             raise ValueError(f"landmarks must have shape ({n}, 33, 5), got {self.landmarks.shape}")
         if n > 1 and np.any(np.diff(self.timestamps_s) <= 0):
             raise ValueError("timestamps must be strictly increasing")
+        if not (math.isfinite(self.sample_fps) and self.sample_fps > 0):
+            raise ValueError(f"sample_fps must be a positive number, got {self.sample_fps}")
+        if self.data_mode not in get_args(DataMode):
+            raise ValueError(f"unknown data_mode {self.data_mode!r}")
         if self.num_people is None:
             self.num_people = self.has_pose.astype(int)
 
@@ -70,25 +76,26 @@ class PoseSequence:
 
     @property
     def has_pose(self) -> np.ndarray:
-        return ~np.all(np.isnan(self.landmarks[:, :, X]), axis=1)
+        has: np.ndarray = ~np.all(np.isnan(self.landmarks[:, :, X]), axis=1)
+        return has
 
     @property
     def frame_period_s(self) -> float:
         return 1.0 / self.sample_fps
 
-    def save_npz(self, path) -> None:
+    def save_npz(self, path: str | Path) -> None:
         np.savez_compressed(
             path,
             timestamps_s=self.timestamps_s,
             frame_indices=self.frame_indices,
             landmarks=self.landmarks.astype(np.float32),
-            num_people=self.num_people,
+            num_people=np.asarray(self.num_people),
             meta=np.array([self.sample_fps, self.duration_s]),
             data_mode=np.array(self.data_mode),
         )
 
     @classmethod
-    def load_npz(cls, path) -> "PoseSequence":
+    def load_npz(cls, path: str | Path) -> PoseSequence:
         with np.load(path, allow_pickle=False) as d:
             return cls(
                 timestamps_s=d["timestamps_s"],
@@ -97,7 +104,7 @@ class PoseSequence:
                 sample_fps=float(d["meta"][0]),
                 duration_s=float(d["meta"][1]),
                 num_people=d["num_people"],
-                data_mode=str(d["data_mode"]),
+                data_mode=cast(DataMode, str(d["data_mode"])),
             )
 
 

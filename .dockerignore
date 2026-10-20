@@ -1,0 +1,14 @@
+# Never send local data, footage, weights or environments into the build context.
+.git
+.venv
+data/
+assets/models/*.task
+assets/models/*.part
+**/__pycache__
+.pytest_cache
+.mypy_cache
+.ruff_cache
+.coverage
+coverage.xml
+htmlcov/
+docs/screenshots/

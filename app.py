@@ -12,10 +12,11 @@ import plotly.graph_objects as go  # noqa: E402
 import streamlit as st  # noqa: E402
 
 from behaviorlens import config, export, metrics, pipeline  # noqa: E402
+from behaviorlens.logging_setup import configure_logging  # noqa: E402
 from behaviorlens.config import AnalysisSettings, RuleParams  # noqa: E402
 from behaviorlens.models import Event, new_id  # noqa: E402
 from behaviorlens.pose import ModelNotFoundError, PoseInferenceError, download_model  # noqa: E402
-from behaviorlens.storage import NotFoundError, Store  # noqa: E402
+from behaviorlens.storage import NotFoundError, SchemaVersionError, Store  # noqa: E402
 from behaviorlens.video_io import VideoValidationError  # noqa: E402
 
 st.set_page_config(page_title="BehaviorLens", page_icon="🔎", layout="wide")
@@ -33,10 +34,15 @@ STEPS = [("ready", "Ready"), ("processing", "Processing"), ("review_ready", "Rev
 
 @st.cache_resource
 def get_store(root: str) -> Store:
+    configure_logging()
     return Store(Path(root))
 
 
-store = get_store(str(config.data_dir()))
+try:
+    store = get_store(str(config.data_dir()))
+except SchemaVersionError as exc:
+    st.error(str(exc))
+    st.stop()
 ss = st.session_state
 ss.setdefault("flash", [])
 ss.setdefault("seek", {})
@@ -499,6 +505,14 @@ with tab_details:
                          hide_index=True, width="stretch")
 
     with st.expander("Review history (audit log)"):
+        problems = store.verify_integrity(session_id)
+        if problems:
+            st.error("Audit trail integrity check FAILED. The review history or events were changed outside "
+                     "the app; treat this session's review data as unreliable.\n\n- " + "\n- ".join(problems))
+        else:
+            rows, head = store.review_chain_head(session_id)
+            st.caption(f"Audit trail verified: {rows} hash-chained record(s)"
+                       + (f", chain head `{head[:16]}…` (also included in JSON exports)." if head else "."))
         hist = store.review_history(session_id)
         if hist:
             st.dataframe(pd.DataFrame([{k: h[k] for k in ("at", "action", "event_id")} for h in hist]),

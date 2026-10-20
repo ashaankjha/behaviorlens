@@ -8,7 +8,10 @@ from __future__ import annotations
 
 import csv
 import io
+import math
 from typing import Any
+
+from . import config
 
 
 def match_events(predicted: list[dict[str, Any]], truth: list[dict[str, Any]],
@@ -47,23 +50,32 @@ def _scores(tp: int, fp: int, fn: int) -> dict[str, Any]:
     recall = tp / (tp + fn) if tp + fn else None
     f1 = (2 * precision * recall / (precision + recall)
           if precision is not None and recall is not None and precision + recall > 0 else None)
-    r = lambda v: None if v is None else round(v, 3)  # noqa: E731
+    def r(v: float | None) -> float | None:
+        return None if v is None else round(v, 3)
+
     return {"tp": tp, "fp": fp, "fn": fn, "precision": r(precision), "recall": r(recall), "f1": r(f1)}
 
 
 def parse_ground_truth_csv(text: str) -> list[dict[str, Any]]:
     """Parse a CSV with columns event_type,start_s,end_s (extra columns ignored)."""
-    rows = []
+    rows: list[dict[str, Any]] = []
     reader = csv.DictReader(io.StringIO(text))
     missing = {"event_type", "start_s", "end_s"} - set(reader.fieldnames or [])
     if missing:
         raise ValueError(f"ground-truth CSV is missing columns: {', '.join(sorted(missing))}")
     for i, row in enumerate(reader, start=2):
+        if len(rows) >= config.MAX_GROUND_TRUTH_ROWS:
+            raise ValueError(f"ground-truth CSV has more than {config.MAX_GROUND_TRUTH_ROWS} rows")
         try:
             start, end = float(row["start_s"]), float(row["end_s"])
         except (TypeError, ValueError) as exc:
             raise ValueError(f"row {i}: start_s/end_s must be numbers") from exc
+        if not (math.isfinite(start) and math.isfinite(end)):
+            raise ValueError(f"row {i}: start_s/end_s must be finite numbers")
         if not 0 <= start < end:
             raise ValueError(f"row {i}: need 0 <= start_s < end_s")
-        rows.append({"event_type": row["event_type"].strip(), "start_s": start, "end_s": end})
+        event_type = (row["event_type"] or "").strip()
+        if not event_type or len(event_type) > 64:
+            raise ValueError(f"row {i}: event_type must be 1-64 characters")
+        rows.append({"event_type": event_type, "start_s": start, "end_s": end})
     return rows

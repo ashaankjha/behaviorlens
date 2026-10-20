@@ -2,7 +2,7 @@
 
 A running record of what we have learned building BehaviorLens: environment gotchas, library behavior, mistakes and their fixes, and the decisions behind the design. **Append to it whenever you learn something non-obvious.** See "How to update" at the end.
 
-Last updated: 2026-10-18
+Last updated: 2026-10-20
 
 ---
 
@@ -19,7 +19,7 @@ Last updated: 2026-10-18
 | MediaPipe | `mediapipe==1.1.1` (newer than 0.10.x) keeps the `mediapipe.tasks.python.vision.PoseLandmarker` API: `PoseLandmarkerOptions(base_options=BaseOptions(model_asset_path=…), running_mode=RunningMode.VIDEO, num_poses=…)`, then `detect_for_video(mp.Image(...), timestamp_ms)`. |
 | MediaPipe on headless Linux | Even CPU inference loads `libEGL.so.1`. Without it: `OSError: libEGL.so.1: cannot open shared object file`. Fix: `apt-get install -y libegl1 libgles2`. |
 | MediaPipe VIDEO mode | Timestamps must be strictly increasing integer milliseconds. We derive them from source frame indices and enforce `max(ts, last + 1)`. |
-| Model URL | `https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/latest/pose_landmarker_lite.task` (~5.8 MB). Downloaded, gitignored, never committed. |
+| Model URL | `https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task` (~5.8 MB; byte-identical to `/latest/` on 2026-10-20, SHA-256 `59929e1d…` pinned in `config.MODEL_SHA256`). Downloaded, gitignored, never committed. |
 | Public test images | The `mediapipe-assets` GCS bucket is listable through the JSON API (`storage.googleapis.com/storage/v1/b/mediapipe-assets/o`). Useful adult photos: `pose.jpg` (yoga lunge, arms horizontal) and `male_full_height_hands.jpg` (standing, full body). Use them only in temp dirs; don't commit them (licence unclear). |
 | Wikimedia Commons | The API returned HTTP 429 from this container, so don't rely on it for test media. |
 | ffmpeg | `imageio-ffmpeg` bundles a static ffmpeg with libx264. We use it for H.264 previews, the demo video and overlays, so system ffmpeg isn't needed. |
@@ -34,6 +34,8 @@ Last updated: 2026-10-18
 | MediaPipe visibility calibration | Visibility scores are **not comparable across pose models**. On Charades, knees with visibility ≥ 0.5: lite 58%, full 55%, heavy 37% of pose frames (median 0.61 / 0.56 / 0.27); hips and shoulders barely differ. |
 | Cloud sessions | `create_session` (claude-code-remote MCP) starts a child cloud session from a repo and branch. Set `outcome_branch` to a non-`main` branch and `permission_mode: auto` (`plan` would stall unattended). Children don't report back on a clean finish: poll with `get_session` and `list_events`, or arm a `send_later` check-in. |
 | Streamlit network | With `server.headless = true` and no `server.address`, Streamlit 1.66 GETs `checkip.amazonaws.com` on every start (to print an "External URL") and binds `0.0.0.0`. `--server.address localhost` (or `address = "localhost"` in `config.toml`) avoids both. See AUDIT D1. |
+| Docker in cloud sessions | The `docker` CLI is installed but no daemon runs (`/var/run/docker.sock` missing), and starting `dockerd` is refused by the sandbox. Verify images in CI instead (`.github/workflows/ci.yml` job `docker`), and pin Dockerfile invariants in a test (`test_dockerfile_keeps_privacy_and_least_privilege_settings`). |
+| mypy strict | `strict = true` on `src/behaviorlens` needed only ~25 fixes, mostly bare `dict` annotations, numpy expressions returning `Any` (bind to a typed local), and untyped lambdas (`lerp = lambda …` counts as an untyped call). `mediapipe` and `imageio_ffmpeg` have no stubs (`ignore_missing_imports`); OpenCV 5 and numpy ship their own. |
 | Streamlit testing | `streamlit.testing.v1.AppTest` runs the script headlessly and supports clicking buttons. It can't click Plotly charts; use Playwright for that. |
 
 ## 3. Mistakes and their fixes
@@ -66,6 +68,11 @@ Last updated: 2026-10-18
 | M24 | I wrote "the only network access is the model download" from my own code, without checking the framework | The audit found Streamlit binding `0.0.0.0` and calling `checkip.amazonaws.com` on every start (AUDIT D1) | Privacy and network claims must be **observed**: watch the startup log and listening sockets (`/proc/net/tcp` when `ss` is missing), and try a non-loopback connection. Pin the framework behaviour in config (`server.address = "localhost"`) and in a test. |
 | M25 | Traceability rows were marked ✅ when the cited test didn't assert the claim (multi-person warning, UI gates, CSV parser) | The clean-room audit downgraded them (AUDIT D2) | A ✅ row must name a test whose assertions cover the claim's exact wording. An independent auditor session is cheap and catches overclaiming that the author can't see. |
 
+| M34 | Ran `pip install -q -r requirements-dev.txt` in the background on a fresh venv | Two attempts sat at 7–10 installed packages for 30+ minutes with no output, while `curl` fetched the same mediapipe wheel at 34 MB/s | Killed it and re-ran with `-v --progress-bar off` to a log file: done in ~2 minutes. **Never leave a long install silent**: log verbosely, watch for progress (site-packages count, log growth), and compare against a direct `curl` before blaming the network. |
+| M35 | Nearly set the coverage floor from `coverage report`'s integer total (92 %) | The exact figure was 91.57 %, so `fail_under = 92` would have failed CI on the first run | Read coverage with `--precision=2` and round **down** (floor 91). |
+| M36 | Assumed the AUDIT D1 fix (`server.address = "localhost"`) also covered the container | In Docker, Streamlit must listen on `0.0.0.0`, and a wildcard address makes `bootstrap._print_url` GET `checkip.amazonaws.com` again | `--logger.hideWelcomeMessage=true` returns before the lookup (verified by calling `_print_url` with a trapped `get_external_ip`); host exposure is limited by `-p 127.0.0.1:8501:8501`. **Re-verify network/privacy claims for every deployment mode**, not just the dev server (extends M24). |
+| M37 | Had subagents draft the regulatory docs from the code while I was still changing it | Within the hour the drafts reported gaps I had since fixed (coverage floor 0, unpinned tools, no load-time model check, untested caps) | Their discrepancy lists were valuable review input, but **re-audit docs against the final code before committing**, and generate what can be generated (`scripts/generate_soup_list.py`). |
+
 ## 4. Design decisions (and why)
 
 - **Thresholds come from real data, selected on a tuning split** (rules-v0.2). Each threshold in `RuleParams` cites its source in a comment. The previous version's thresholds stay reproducible through `--params`, so every change can be compared on the held-out half.
@@ -81,6 +88,10 @@ Last updated: 2026-10-18
 - **Thumbnails and overlays** live under `data/sessions/<id>/` so Delete session removes them, and they're never exported.
 
 - **Independent audit plus parallel experiment paid off:** the audit predicted the validation-cache bug (D3) that the experiment session independently hit and fixed (M21). Both children stayed on-brief with standalone prompts. Merge conflicts only happened in `docs/LEARNINGS.md` (concurrent M-numbers), resolved by renumbering at merge.
+- **Schema changes go through migrations** (`storage.MIGRATIONS`, `schema_version` table). Never edit a released migration; append one. Existing databases are backed up (`behaviorlens.db.pre-vN-backup`) before upgrading, and a database from a newer release is refused rather than modified. Pre-versioning databases are detected as v1.
+- **Review history is tamper-evident, not tamper-proof.** Per-session SHA-256 chain plus append-only triggers; `verify_integrity` also cross-checks each reviewed event against its last audit record. Anyone with write access can rebuild the chain, so JSON exports carry the chain head as an external anchor. We rejected app-level signing: it would need key management, and we don't roll our own crypto.
+- **The pose model is pinned by URL version and SHA-256** (`config.MODEL_SHA256`), checked on download and when loading the default model. An upstream model update fails loudly instead of silently changing inference.
+- **Encryption at rest is delegated to the OS** (LUKS, FileVault, BitLocker), not implemented in the app (`docs/regulatory/cybersecurity.md`).
 - **Parallel work goes to child cloud sessions on separate branches** and is merged by the parent after review. First use: a clean-room README audit (`audit/clean-room-readme`) and a pose-model comparison (`experiment/pose-model-comparison`).
 
 ## 5. Verification recipes that worked

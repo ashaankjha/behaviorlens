@@ -10,6 +10,7 @@ import json
 import os
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
+from typing import Any
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
@@ -19,8 +20,11 @@ ALGORITHM_VERSION = "rules-v0.2"
 MODEL_NAME = "pose_landmarker_lite"
 MODEL_URL = (
     "https://storage.googleapis.com/mediapipe-models/pose_landmarker/"
-    "pose_landmarker_lite/float16/latest/pose_landmarker_lite.task"
+    "pose_landmarker_lite/float16/1/pose_landmarker_lite.task"
 )
+# Versioned URL ("/1/", byte-identical to "/latest/" on 2026-10-20) plus a pinned checksum, so an
+# upstream model update can never silently change inference: it fails the download instead.
+MODEL_SHA256 = "59929e1d1ee95287735ddd833b19cf4ac46d29bc7afddbbf6753c459690d574a"
 MODEL_CARD_URL = (
     "https://developers.google.com/edge/mediapipe/solutions/vision/pose_landmarker#models"
 )
@@ -32,6 +36,14 @@ MAX_DURATION_S = 5 * 60
 MIN_DURATION_S = 1.0
 MIN_FPS = 1.0
 MAX_FPS = 240.0
+# Decoded frame size limit (4K UHD). Bounds per-frame memory (a 3840x2160 BGR frame is ~25 MB)
+# and rejects crafted headers that claim enormous dimensions.
+MAX_FRAME_PIXELS = 3840 * 2160
+# Hard cap on frames decoded per analysis (5 min at the 240 fps maximum), independent of
+# whatever frame count the container header claims.
+MAX_DECODED_FRAMES = int(MAX_DURATION_S * MAX_FPS)
+# Ground-truth CSV upload limits.
+MAX_GROUND_TRUTH_ROWS = 10_000
 # Tolerance when validating event end times against the video duration.
 DURATION_TOLERANCE_S = 0.5
 
@@ -63,6 +75,11 @@ def model_path() -> Path:
     override = os.environ.get("BEHAVIORLENS_MODEL_PATH")
     if override:
         return Path(override)
+    return default_model_path()
+
+
+def default_model_path() -> Path:
+    """Where download_model puts the pinned model (config.MODEL_SHA256 applies to this file)."""
     return PROJECT_ROOT / "assets" / "models" / f"{MODEL_NAME}.task"
 
 
@@ -105,14 +122,14 @@ class RuleParams:
     sustained_standing_min_s: float = 2.0
     enable_sustained_standing: bool = True
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
     def to_json(self) -> str:
         return json.dumps(self.to_dict(), sort_keys=True)
 
     @classmethod
-    def from_dict(cls, data: dict | None) -> "RuleParams":
+    def from_dict(cls, data: dict[str, Any] | None) -> RuleParams:
         if not data:
             return cls()
         known = {f for f in cls.__dataclass_fields__}
@@ -124,5 +141,5 @@ class AnalysisSettings:
     sample_fps: float = DEFAULT_SAMPLE_FPS
     rules: RuleParams = field(default_factory=RuleParams)
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, Any]:
         return {"sample_fps": self.sample_fps, "rules": self.rules.to_dict()}
