@@ -19,7 +19,7 @@ from behaviorlens.video_io import (
     validate_upload,
 )
 
-from conftest import make_seq, requires_model, window, write_video
+from conftest import make_multi, make_seq, person, requires_model, window, write_video
 
 
 def upload(store, path, name=None):
@@ -44,6 +44,30 @@ class FakeEstimator:
 
     def close(self):
         pass
+
+
+class FakeMultiEstimator:
+    """Returns every person of a synthetic MultiPoseSequence by timestamp (no inference)."""
+
+    model_version = "fakemulti@1"
+
+    def __init__(self, multi, **kwargs):
+        self.multi, self.kwargs, self.calls = multi, kwargs, 0
+
+    def detect_all(self, frame, t):
+        self.calls += 1
+        return self.multi.detections(int(np.argmin(np.abs(self.multi.timestamps_s - t))))
+
+    def detect(self, frame, t):  # pragma: no cover - the pipeline prefers detect_all
+        raise AssertionError("detect_all should be used")
+
+    def close(self):
+        pass
+
+
+def two_people(t):
+    """A large seated person throughout, and a smaller person who stands up at 3 s."""
+    return [person(0.3, 1.0, stand=0.0), person(0.75, 0.5, stand=1.0 if t >= 3 else 0.0)]
 
 
 # ------------------------------------------------------------ demo (synthetic) end-to-end
@@ -150,6 +174,73 @@ def test_video_pipeline_with_fake_estimator_and_cache(store, tmp_path):
     calls = fake.calls
     pipeline.run_analysis(store, sid, AnalysisSettings(sample_fps=5), estimator_factory=lambda: fake)
     assert fake.calls == calls  # second run served from the pose cache
+
+
+def test_multi_person_video_is_tracked_and_subject_is_selectable(store, tmp_path):
+    multi = make_multi(6, people=two_people)
+    sid = upload(store, write_video(tmp_path / "two.mp4", 6.0))
+    fake = FakeMultiEstimator(multi)
+    res = pipeline.run_analysis(store, sid, AnalysisSettings(sample_fps=5), estimator_factory=lambda: fake)
+    t = res["stats"]["tracking"]
+    assert t["tracks"] == 2 and t["substantial_tracks"] == 2 and t["subject_selection"] == "auto"
+    assert t["max_people"] == 2 and len(t["per_track"]) == 2
+    auto = t["subject_track_id"]
+    assert any("2 people were tracked" in w for w in res["warnings"])
+    # the automatic subject (larger, seated person) never stands up
+    assert not any(e.event_type == "standing_transition" for e in store.list_events(sid))
+    analysis = store.latest_analysis(sid)
+    assert analysis["settings"]["subject_track_id"] is None and analysis["settings"]["max_people"] == 4
+    assert pipeline.tracks_path(store, sid, analysis["analysis_id"]).is_file()
+
+    # reviewer picks the other person: served from the cache, events computed on that track only
+    other = next(p["track_id"] for p in t["per_track"] if p["track_id"] != auto)
+    calls = fake.calls
+    res2 = pipeline.run_analysis(store, sid, AnalysisSettings(sample_fps=5, subject_track_id=other),
+                                 estimator_factory=lambda: fake)
+    assert fake.calls == calls
+    assert res2["stats"]["tracking"]["subject_track_id"] == other
+    assert res2["stats"]["tracking"]["subject_selection"] == "reviewer"
+    (st,) = [e for e in store.list_events(sid) if e.event_type == "standing_transition"]
+    assert st.evidence["tracking"]["subject_track_id"] == other
+    assert st.evidence["tracking"]["tracked_people"] == 2
+
+
+def test_pose_cache_key_includes_max_people(store, tmp_path):
+    multi = make_multi(3, people=lambda t: [person(0.5, 0.8)])
+    sid = upload(store, write_video(tmp_path / "one.mp4", 3.0))
+    fake = FakeMultiEstimator(multi)
+    pipeline.run_analysis(store, sid, AnalysisSettings(max_people=4), estimator_factory=lambda: fake)
+    calls = fake.calls
+    pipeline.run_analysis(store, sid, AnalysisSettings(max_people=2), estimator_factory=lambda: fake)
+    assert fake.calls == 2 * calls  # different num_poses -> different landmarks -> new extraction
+    keys = {pipeline._pose_cache_path(store, "c", "m@1", 5.0, n) for n in (None, 2, 4)}
+    keys |= {pipeline._pose_cache_path(store, "c", "m@1", 10.0, 4)}
+    assert len(keys) == 4
+
+
+def test_default_estimator_gets_max_people(store, tmp_path, monkeypatch):
+    made = []
+
+    def factory(**kwargs):
+        made.append(kwargs)
+        return FakeMultiEstimator(make_multi(2, people=lambda t: [person()]), **kwargs)
+
+    monkeypatch.setattr(pipeline, "MediaPipePoseEstimator", factory)
+    sid = upload(store, write_video(tmp_path / "one.mp4", 2.0))
+    pipeline.run_analysis(store, sid, AnalysisSettings(max_people=3))
+    assert made == [{"max_people": 3}]
+
+
+def test_overlay_labels_tracks_and_is_invalidated_by_reanalysis(store, tmp_path):
+    multi = make_multi(4, people=two_people)
+    sid = upload(store, write_video(tmp_path / "two.mp4", 4.0))
+    run = lambda **kw: pipeline.run_analysis(store, sid, AnalysisSettings(**kw),
+                                             estimator_factory=lambda: FakeMultiEstimator(multi))
+    run()
+    out = pipeline.render_overlay(store, sid)
+    assert out.is_file() and probe_video(out).frame_count > 0
+    run(subject_track_id=2)
+    assert not out.exists() and store.get_session(sid)["overlay_relpath"] is None
 
 
 def test_missing_model_is_actionable(store, tmp_path, monkeypatch):
@@ -268,8 +359,11 @@ def test_validation_cache_key_includes_model_and_fps(tmp_path, monkeypatch):
     keys = {lite,
             v.cache_path(clip, "pose_landmarker_full@bbbbbbbbbbbb", 5.0),
             v.cache_path(clip, "pose_landmarker_lite@cccccccccccc", 5.0),  # same name, new weights
-            v.cache_path(clip, "pose_landmarker_lite@aaaaaaaaaaaa", 10.0)}
-    assert len(keys) == 4
+            v.cache_path(clip, "pose_landmarker_lite@aaaaaaaaaaaa", 10.0),
+            # all-people caches: num_poses changes MediaPipe's output, so it is part of the key
+            v.cache_path(clip, "pose_landmarker_lite@aaaaaaaaaaaa", 5.0, max_people=4),
+            v.cache_path(clip, "pose_landmarker_lite@aaaaaaaaaaaa", 5.0, max_people=2)}
+    assert len(keys) == 6
     assert lite == v.cache_path(clip, "pose_landmarker_lite@aaaaaaaaaaaa", 5.0)
     assert lite.parent == tmp_path / "validation" / "cache"
 
@@ -287,3 +381,6 @@ def test_validation_params_reject_typos():
     assert params.dwell_s == 1.0 and overrides == {"dwell_s": 1.0}
     with pytest.raises(SystemExit, match="unknown --params keys: dwel_s"):
         v.parse_params('{"dwel_s": 1.0}')
+    assert v.parse_tracking('{"max_gap_s": 1.0}').max_gap_s == 1.0
+    with pytest.raises(SystemExit, match="unknown --tracking-params keys: max_gap"):
+        v.parse_tracking('{"max_gap": 1.0}')

@@ -89,3 +89,49 @@ def test_audit_trail_status_is_shown_and_flags_tampering(app, store):
     app.run()
     assert not app.exception
     assert any("integrity check FAILED" in e.value for e in app.error)
+
+
+def test_reviewer_can_pick_the_subject_track(app, store, tmp_path, monkeypatch):
+    """Multiple tracked people: a subject selectbox with unique labels (M2) re-runs on that track."""
+    import io
+
+    import numpy as np
+
+    from behaviorlens import pipeline
+    from conftest import make_multi, person, write_video
+
+    multi = make_multi(6, people=lambda t: [person(0.3, 1.0, stand=0.0),
+                                            person(0.75, 0.5, stand=1.0 if t >= 3 else 0.0)])
+
+    class Fake:
+        model_version = "fakemulti@1"
+
+        def __init__(self, **kwargs):
+            pass
+
+        def detect_all(self, frame, t):
+            return multi.detections(int(np.argmin(np.abs(multi.timestamps_s - t))))
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(pipeline, "MediaPipePoseEstimator", Fake)
+    data = write_video(tmp_path / "two.mp4", 6.0).read_bytes()
+    sid = pipeline.create_upload_session(store, "two.mp4", io.BytesIO(data), len(data))
+    pipeline.run_analysis(store, sid)
+    auto = store.latest_analysis(sid)["stats"]["tracking"]["subject_track_id"]
+    app.run()
+    app.selectbox(key="session_select").set_value(sid).run()
+    subject = app.selectbox(key=f"subject_{sid}")
+    labels = list(subject.options)  # AppTest exposes the formatted labels
+    assert len(labels) == 3 and len(set(labels)) == 3  # automatic + two tracks, all distinct
+    assert labels[0].startswith(f"Automatic: track #{auto}")
+    other = next(t for t in (1, 2) if t != auto)
+    subject.set_value(other).run()
+    if store.pending_algorithm_count(sid):
+        next(c for c in app.checkbox if c.label.startswith("Replace")).check().run()
+    _button(app, "Re-run analysis").click().run()
+    assert not app.exception
+    t = store.latest_analysis(sid)["stats"]["tracking"]
+    assert t["subject_track_id"] == other and t["subject_selection"] == "reviewer"
+    assert any("standing_transition" == e.event_type for e in store.list_events(sid))

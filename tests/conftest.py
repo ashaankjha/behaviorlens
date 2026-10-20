@@ -63,3 +63,32 @@ def write_video(path: Path, seconds: float, fps: float = 15.0, size=(320, 240),
 
 requires_model = pytest.mark.skipif(not config.model_path().is_file(),
                                     reason="pose model not downloaded (python scripts/download_model.py)")
+
+
+def person(cx: float = 0.5, scale: float = 1.0, *, stand: float = 1.0, cy: float = 0.5,
+           left_up: float = 0.0, right_up: float = 0.0, visibility: float = 0.95) -> np.ndarray:
+    """One synthetic person's (33, 5) landmarks: the demo skeleton moved to (cx, cy) and scaled."""
+    pts = _keypoints(stand, left_up, right_up)
+    lm = np.full((NUM_LANDMARKS, 5), np.nan)
+    for j in range(NUM_LANDMARKS):
+        x, y = pts[j]
+        lm[j] = (cx + (x - 0.5) * scale, cy + (y - 0.5) * scale, 0.0, visibility, 0.99)
+    return lm
+
+
+def make_multi(duration: float, fps: float = 5.0, *,
+               people: Callable[[float], list[np.ndarray]], shuffle_seed: int | None = None):
+    """MultiPoseSequence from a function giving the people visible at time t (slot order shuffled
+    when ``shuffle_seed`` is set, as MediaPipe's order carries no identity)."""
+    from behaviorlens.tracking import MultiPoseSequence
+
+    rng = np.random.default_rng(shuffle_seed)
+    times = np.round(np.arange(0, duration, 1 / fps), 4)
+    frames = []
+    for t in times:
+        ps = list(people(float(t)))
+        if shuffle_seed is not None:
+            ps = [ps[i] for i in rng.permutation(len(ps))]
+        frames.append(ps)
+    return MultiPoseSequence.from_frames(times, np.arange(len(times)), frames, sample_fps=fps,
+                                         duration_s=duration, data_mode="synthetic")

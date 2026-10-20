@@ -35,6 +35,11 @@ class PoseEstimator(Protocol):
     def close(self) -> None: ...
 
 
+class MultiPoseEstimator(PoseEstimator, Protocol):
+    def detect_all(self, frame_bgr: np.ndarray, timestamp_s: float) -> list[np.ndarray]:
+        """Return every detected person's (33, 5) landmarks (possibly empty)."""
+
+
 class ModelIntegrityError(RuntimeError):
     pass
 
@@ -89,8 +94,11 @@ def model_version(path: Path) -> str:
 
 
 class MediaPipePoseEstimator:
-    """Primary-person pose estimation. Detects up to two people so that a second
-    person can be flagged (attribution is not reliable in that case)."""
+    """Pose estimation for up to ``max_people`` people per frame.
+
+    ``detect`` returns the largest person per frame (legacy single-person path);
+    ``detect_all`` returns every detected person, for tracking (tracking.py).
+    """
 
     def __init__(self, model_file: Path | None = None, max_people: int = 2,
                  min_detection_confidence: float = 0.5, min_tracking_confidence: float = 0.5):
@@ -127,17 +135,19 @@ class MediaPipePoseEstimator:
         self._last_ts_ms = -1
 
     def detect(self, frame_bgr: np.ndarray, timestamp_s: float) -> tuple[np.ndarray | None, int]:
+        arrays = self.detect_all(frame_bgr, timestamp_s)
+        if not arrays:
+            return None, 0
+        return select_primary(arrays), len(arrays)
+
+    def detect_all(self, frame_bgr: np.ndarray, timestamp_s: float) -> list[np.ndarray]:
         # VIDEO mode requires strictly increasing integer millisecond timestamps.
         ts_ms = max(int(round(timestamp_s * 1000)), self._last_ts_ms + 1)
         self._last_ts_ms = ts_ms
         rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
         image = self._mp.Image(image_format=self._mp.ImageFormat.SRGB, data=rgb)
         result = self._landmarker.detect_for_video(image, ts_ms)
-        poses = result.pose_landmarks or []
-        if not poses:
-            return None, 0
-        arrays = [_to_array(p) for p in poses]
-        return select_primary(arrays), len(arrays)
+        return [_to_array(p) for p in result.pose_landmarks or []]
 
     def close(self) -> None:
         self._landmarker.close()

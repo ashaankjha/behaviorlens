@@ -127,6 +127,61 @@ Not because they see legs worse. They **report lower visibility for legs**, so t
 
 Caveats as above: 19 stand-up windows and 40 action clips, home and sports footage rather than clinic recordings, and incomplete Charades annotations. All intervals are wide.
 
+## Person tracking
+
+Run date: 2026-10-20. **Question:** does tracking people across frames, and computing events on one subject track, remove the identity-switch false positives of rules-v0.2 without losing real detections? rules-v0.2 thresholds are unchanged. `ALGORITHM_VERSION` is unchanged on this branch.
+
+**Method.** MediaPipe returns up to 4 poses per frame (`num_poses = AnalysisSettings.max_people`). `tracking.track_people` links them across sampled frames using geometry only: the IoU and centre distance between the all-landmark bounding box and a constant-velocity prediction, a soft size term, and a staleness term. Assignment per frame is exact (most matches, then least cost). A track missing for more than 2 s gets a new ID. There is no appearance, face or identity model. The rules then run on one **subject** track, by default the one with the greatest coverage × mean box size. Frames without the subject are unobservable. The all-people landmarks have their own cache key (`cache_path(..., max_people=4)` → `*_multi4.npz`). Three attributions are scored on identical clips:
+
+- **legacy**: rules-v0.2 as shipped (`num_poses = 2`, the largest person per frame). This reproduces the published v0.2 numbers exactly.
+- **largest**: 4-person landmarks with v0.2's per-frame largest person. This isolates the effect of `num_poses`.
+- **tracked**: 4-person landmarks with tracking and the subject track (the new default).
+
+```bash
+python scripts/validate_real_video.py --split holdout --attribution tracked   # also: largest, legacy
+```
+
+**Parameter selection (tune split only, M19).** The first run used a-priori defaults and fragmented single people badly (tune-split median subject pose coverage 0.64 against 0.94 detected). Diagnosis on tune clips found two causes. First, the box built from *visible* landmarks jumps whenever the legs flicker in and out of visibility (consecutive-frame size ratio p99 4.3×). The fix is to track on the box of all landmark positions (p99 2.9×). Second, a hard 3× size gate split people at those jumps. A grid over `max_size_ratio` ∈ {3, 6, 100}, `max_gap_s` ∈ {1, 2, 4} and `duplicate_iou` ∈ {0.5, 0.7}, ranked by tune stand-up recall, then precision, then `hand_raised`, then posture observability, selected `max_size_ratio = 100` (size is only a soft cost) and `duplicate_iou = 0.7`. The three `max_gap_s` values tied, so the a-priori 2 s was kept. The held-out half was then scored **once**.
+
+### `standing_transition` (Charades), 95% Wilson intervals in brackets
+
+| Attribution | Split | Recall | Precision | Confused with sitting down | Recall when legs observable | Median posture observability |
+|---|---|---|---|---|---|---|
+| legacy (v0.2) | tune | 0.11 (1/9) | 0.50 (1/2) | 0 | 0.25 (1/4) | 0.22 |
+| largest, 4 poses | tune | 0.11 (1/9) | 0.25 (1/4) | 0 | 0.25 (1/4) | 0.21 |
+| tracked | tune | 0.11 (1/9) | 1.00 (1/1) | 0 | 0.33 (1/3) | 0.13 |
+| **legacy (v0.2)** | **holdout** | **0.40 (4/10)** [0.17–0.69] | **0.40 (4/10)** [0.17–0.69] | 0 | 0.50 (4/8) | 0.41 |
+| largest, 4 poses | holdout | 0.30 (3/10) [0.11–0.60] | 0.27 (3/11) [0.10–0.57] | 0 | 0.38 (3/8) | 0.41 |
+| **tracked** | **holdout** | **0.20 (2/10)** [0.06–0.51] | **0.40 (2/5)** [0.12–0.77] | 0 | 0.33 (2/6) | 0.29 |
+| legacy (v0.2) | all | 0.26 (5/19) | 0.42 (5/12) | 0 | 0.42 (5/12) | 0.34 |
+| largest, 4 poses | all | 0.21 (4/19) | 0.27 (4/15) | 0 | 0.33 (4/12) | 0.36 |
+| tracked | all | 0.16 (3/19) | 0.50 (3/6) | 0 | 0.33 (3/9) | 0.20 |
+
+`hand_raised` (UCF101) is **identical** under all three attributions on every split (all 40 clips: TP 10, FP 3, FN 6, TN 21). Only 3 of the 40 UCF clips have more than one substantial track. 4-person extraction cost about the same as 2-person extraction (166 clips: 177 s wall, 614 s CPU, against 169 s and 603 s).
+
+### Held-out disagreements, reviewed visually (M18)
+
+Frames were rendered with track boxes, viewed in scratch and not kept.
+
+| Clip | v0.2 | Tracked | What the frames show |
+|---|---|---|---|
+| **K5CRM** | 1 false stand-up (12.6–13.8 s) | **none** | Two people. v0.2's per-frame largest person switched 13 times; its "seated" frames and "standing" frames came from different tracks (seated from track 1, standing from track 3 at 13.6 s). Tracking keeps subject #1 (99% coverage) and proposes nothing. The false positive is removed as intended. |
+| NY5R2 | hit (3.8–4.2 s) | miss | The v0.2 "hit" was **a lucky identity switch**. Its seated evidence (2.0–3.8 s) came from a phantom pose that MediaPipe hallucinated on a backpack (track 1); its standing evidence came from the real person (track 2). Tracking follows the real person, whose seated phase is out of view, so no event is proposed. That is correct under the "never guess" rule. |
+| HIOY0 | hit (14.2–16.4 s) plus 2 false positives | miss, no false positives | One person, but the handheld camera pans sharply at about 15 s. The box jumps and the tracker splits the person into tracks 1 and 2. This is a **real tracking loss caused by camera motion**. v0.2's two false positives were also built across track switches (tracks 3→4 and 7→9). |
+| O1LOW | none | none | Under "largest" (4 poses) a false positive appears; tracking removes it. |
+| 9HGNV, E64R4, PKEZI | 1 false positive each | the same 1 each | Not caused by attribution. PKEZI is the real but unannotated stand-up adjudicated earlier, so the tracked holdout precision after visual review is 3/5. |
+
+**Attribution-correct comparison** (post-hoc adjudication by the authoring agent, so indicative only): v0.2 holdout recall is 3/10 once the NY5R2 phantom-switch hit is discounted. Tracked recall is 2/10. The remaining gap is HIOY0, caused by the camera pan.
+
+### Verdict
+
+- Tracking **removes identity-switch false positives**. Holdout false positives fell from 6 to 3, and every removed one (K5CRM and HIOY0 ×2) was a seated→standing pair stitched across two tracks. Precision is the same at 0.40 raw, and higher after visual review (0.60 against 0.50).
+- It **loses recall** (holdout 2/10 against 4/10). One of the two lost hits was itself an artifact (NY5R2). The other is a camera pan breaking geometric continuity (HIOY0). `num_poses = 4` alone also costs one hit on holdout (largest: 3/10).
+- Multiple substantial tracks are common in Charades (82 of 126 clips): real second people, phantom poses on furniture and clothes, and pan-induced splits. So the multi-person warning shows often on handheld home video.
+- None of this is statistically conclusive at 10 held-out windows. The intervals overlap almost completely. It is engineering evidence about *why* detections happen, not a validated accuracy gain.
+
+**Rejected alternative: stitching tracks that never co-occur.** This would recover HIOY0-type splits, but on the tune split it would also merge different people who appear one after another. 03OQS has a person at a table, then a different person behind them who is detected only once the first leaves. That is exactly the attribution error tracking exists to prevent. Combining tracking with the camera-motion detector from the parallel session is the better route to the pan-split case.
+
 ## What we learned (and what changed)
 
 1. **Thresholds tuned on synthetic data don't transfer.** Real seated people seen from elevated home cameras have hip-to-knee drops of 0.3–0.55 torso lengths (median 0.39). v0.1's "≤ 0.35" caught fewer than half of real seated frames. → v0.2 adds **hip angle** (≤ 140° seated, ≥ 150° standing) and **knee angle** (≤ 130° seated, when ankles are visible). The drop cue is kept for front-on camera setups.
@@ -137,7 +192,7 @@ Caveats as above: 19 stand-up windows and 40 action clips, home and sports foota
    - Both BodyWeightSquats "false positives" are correct under the PRD definition (hands clasped behind the head, or arms raised above shoulder height).
    - The JumpingJack misses are arm raises lasting about 0.4 s (2 frames at 5 fps), shorter than the PRD's 0.6 s minimum.
    - Under the operational definition, the only real `hand_raised` error is the hallucinated-head walking clip. This adjudication was done by the same agent that built the rules, so treat it as indicative.
-6. **Annotations are incomplete.** One stand-up "false positive" (PKEZI, 24.6–27.0 s) is a real stand-up from a bed that the annotation places later (from 28.5 s). The other false positives come from handheld camera pans (2), partial-body close-ups or jitter on standing people (3), and **a second person** (1). Multi-person attribution is a documented MVP limitation.
+6. **Annotations are incomplete.** One stand-up "false positive" (PKEZI, 24.6–27.0 s) is a real stand-up from a bed that the annotation places later (from 28.5 s). The other false positives come from handheld camera pans (2), partial-body close-ups or jitter on standing people (3), and **a second person** (1, K5CRM). That one is removed by person tracking (see *Person tracking*).
 
 ## Limits of this validation
 
@@ -150,4 +205,4 @@ Caveats as above: 19 stand-up windows and 40 action clips, home and sports foota
 
 - Record staged clips in the intended setting (front-on camera, full body visible) using the README procedure, and add them to `data/validation/` with a ground-truth CSV.
 - ~~Try `pose_landmarker_full`/`heavy` and 10 fps.~~ Done (see *Pose model comparison*): neither larger model helps with the current thresholds, and 10 fps doesn't help `hand_raised`. Re-tuning the temporal parameters for 10 fps on the tune split is the remaining lead.
-- Add person tracking (multi-person) and camera-motion detection to suppress the two main remaining false-positive sources.
+- ~~Add person tracking.~~ Done (see *Person tracking*): it removes identity-switch false positives but is fragile under camera pans. Integrating camera-motion detection is the next step.
