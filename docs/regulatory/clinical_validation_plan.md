@@ -44,7 +44,7 @@ From [VALIDATION.md](../VALIDATION.md) (`pose_landmarker_lite`, 5 fps). Figures 
 | Per-frame posture, held-out balanced accuracy | 0.79 | Activity-derived labels |
 | `hand_raised`, UCF101 per clip | Precision 0.77, recall 0.63 vs class labels (TP 10, FP 3, FN 6, TN 21) | Class labels are not operational definitions. Adjudicated by the developer, not blinded raters. |
 
-Key limitations: tiny samples; non-clinical settings; no blinded expert reference standard; most misses are unobservable legs; the remaining false positives come from camera pans, partial framing and a second person. Person tracking and camera-motion detection are **planned, not in this branch**. This evidence justifies running a study. It does not justify any performance claim.
+Key limitations: tiny samples; non-clinical settings; no blinded expert reference standard; most misses are unobservable legs; the remaining false positives come from camera pans, partial framing and a second person. Person tracking and camera-motion detection were added in rules-v0.3 (tracking on; camera motion shown, masking off by default); they removed identity-switch and some pan false positives but lowered held-out recall to 2/10 (VALIDATION, *rules-v0.3*). This evidence justifies running a study. It does not justify any performance claim.
 
 ## 4. Study design
 
