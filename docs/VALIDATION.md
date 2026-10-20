@@ -514,3 +514,18 @@ Run date: 2026-10-20. **Question:** the fixed-camera frame review (*Held-out dis
 > **Also reported.** Whether S changes Charades (elevated, handheld) behaviour on either split, and whether one threshold set can plausibly serve both geometries. A sample of fresh-set and holdout disagreements is reviewed visually after scoring (scratch only, never committed).
 
 > **Amendment 1 (committed before any tune result for this grid was computed).** Google Drive's per-file download quota blocked 61 of the 153 evaluated Phase 1 videos and 75 of the 206 fresh ones (HTTP 200 with a "Quota exceeded" page; the fetcher now rejects it, `DriveQuotaError`). Which files were blocked depends on download order, not on any result. So: (a) PKU-MMD Phase 1 in this cycle is the **92 videos available at this commit** (0002–0086, 0090, 0094, 0106, 0126, 0194, 0226, 0230: 46 tune, 46 holdout); the other three datasets are complete. Selection and the one holdout scoring use exactly these, and videos fetched later are not added to this cycle's tune or holdout. Phase 2 tune and holdout numbers are therefore not directly comparable to this cycle's; the comparison that matters, S against C, is paired on the same videos. (b) The fresh set rule stands: score it once, only when ≥ 150 fresh videos are present. If it stays below 150, the verdict is **"confirmation deferred (n < 150)" with no adoption recommendation**, and the fetch/extract commands for the remainder are documented for a later session.
+
+### Phase 3 selection on the pooled tune split
+
+Pooled tune split under Amendment 1: **283 videos, 80 `standing_transition` windows** (Charades 9, UTKinect 7, PKU-MMD P1 14, P2 50). All 48 settings pass the `hand_raised` guard (label F1 0.137–0.138 against C's 0.138). Best pooled-tune F1 0.709; six settings lie within 0.005 of it, and the tie-break (fewest tune false positives) selects:
+
+> **S: `seated_max_drop = 0.45`**, all other RuleParams and TrackingParams at rules-v0.3 (`seated_max_hip_angle_deg = 140`, `seated_max_knee_angle_deg = 130`, `seated_drop_ceiling = 0.5`, `merge_fragments = false`).
+
+| Tune (283 videos) | Recall | Precision | FP | F1 | Charades | UTKinect | PKU-MMD P1 | PKU-MMD P2 |
+|---|---|---|---|---|---|---|---|---|
+| C rules-v0.3 | 0.70 (56/80) | 0.55 (56/101) | 45 | 0.619 | 1/9, 1/1 | 3/7, 3/3 | 11/14, 11/19 | 41/50, 41/78 |
+| **S** | 0.78 (62/80) | 0.65 (62/95) | 33 | **0.709** | 1/9, 1/1 | 4/7, 4/4 | 13/14, 13/18 | 44/50, 44/72 |
+| *merge only (C + merge)* | 0.70 (56/80) | 0.55 (56/102) | 46 | 0.615 | 1/9, 1/2 | 3/7, 3/3 | 11/14, 11/19 | 41/50, 41/78 |
+| *S + merge* | 0.78 (62/80) | 0.65 (62/96) | 34 | 0.705 | 1/9, 1/2 | 4/7, 4/4 | 13/14, 13/18 | 44/50, 44/72 |
+
+(Each row is recall then precision. The italic rows are grid rows shown for context; they are not selections.) The other ties differ only in the hip or knee threshold, or in a ceiling of 0.6 that buys one stand-up for four false positives. **Track merging adds nothing on the tune half**: no tune stand-up depends on a fragmented track, and it adds one Charades false positive (reviewed below). **The seated change does not alter Charades tune** (1/9, 1/1 either way). This repeats the exploratory lead on the reduced tune set (0.629 → 0.725 on the full Phase 2 tune set), which is expected, since it is the same lever chosen on overlapping data.
