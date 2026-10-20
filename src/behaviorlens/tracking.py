@@ -35,6 +35,8 @@ _MAX_SPEED = 2.0
 _MIN_AREA = 1e-4
 # Per-track rows kept in analysis stats (largest scores first); the total is reported separately.
 _MAX_TRACKS_IN_STATS = 10
+# Frames at each end of a track whose median box describes it for fragment merging.
+_JUNCTION_FRAMES = 3
 
 
 # ---------------------------------------------------------------- multi-person landmarks
@@ -278,6 +280,7 @@ class TrackingResult:
     boxes: np.ndarray
     params: TrackingParams
     duplicates_dropped: int = 0
+    fragments_merged: int = 0
 
     @property
     def track_ids(self) -> list[int]:
@@ -354,6 +357,7 @@ class TrackingResult:
             "largest_person_switches": switches,
             "subject_is_largest_ratio": round(float(np.mean(seen == subject_id)), 3) if seen.size else 0.0,
             "duplicate_detections_dropped": self.duplicates_dropped,
+            "fragments_merged": self.fragments_merged,
             "per_track": [s.to_dict() for s in sorted(top, key=lambda s: s.track_id)],
             "params": self.params.to_dict(),
         }
@@ -409,7 +413,65 @@ def track_people(multi: MultiPoseSequence, params: TrackingParams | None = None)
                 track.update(box, t)
             assignment[k, slot] = track.track_id
             boxes[k, slot] = box
-    return TrackingResult(multi=multi, assignment=assignment, boxes=boxes, params=p, duplicates_dropped=dropped)
+    result = TrackingResult(multi=multi, assignment=assignment, boxes=boxes, params=p, duplicates_dropped=dropped)
+    return merge_fragments(result) if p.merge_fragments else result
+
+
+def _junction_box(boxes: np.ndarray, frames: np.ndarray) -> np.ndarray:
+    return np.asarray(np.median(boxes[frames], axis=0), dtype=float)
+
+
+def merge_fragments(result: TrackingResult) -> TrackingResult:
+    """Join tracks that are temporally disjoint and geometrically continuous (one person split
+    across untracked gaps), then renumber IDs in order of appearance.
+
+    Tracks are taken in order of first appearance; each joins the best-matching chain that ended
+    before it started, within ``merge_max_gap_s``, ``merge_max_center_dist`` (in sizes of the
+    chain's end box) and ``merge_max_size_ratio``. A chain only ever grows at its end, so a merged
+    track is never present twice in one frame: **two tracks that coexist in any frame are never
+    joined**, directly or through a chain (H-03). Geometry only, like tracking itself: two people
+    who take turns at the same spot with the same apparent size would be joined.
+    """
+    p = result.params
+    a = result.assignment
+    ts = result.multi.timestamps_s
+    box_of: dict[int, np.ndarray] = {}  # track -> (N, 4) box per frame (NaN when absent)
+    for tid in result.track_ids:
+        k, j = np.nonzero(a == tid)
+        per = np.full((len(ts), 4), np.nan)
+        per[k] = result.boxes[k, j]
+        box_of[tid] = per
+    frames_of = {tid: np.flatnonzero(np.isfinite(b[:, 0])) for tid, b in box_of.items()}
+    chains: list[list[int]] = []
+    for tid in sorted(frames_of, key=lambda t: (frames_of[t][0], t)):
+        start = frames_of[tid][:_JUNCTION_FRAMES]
+        head = _junction_box(box_of[tid], start)
+        best: tuple[float, int] | None = None
+        for c, chain in enumerate(chains):
+            last = chain[-1]
+            end = frames_of[last][-_JUNCTION_FRAMES:]
+            if end[-1] >= start[0]:  # overlaps (or touches) in time: possibly another person
+                continue
+            gap = float(ts[start[0]] - ts[end[-1]])
+            tail = _junction_box(box_of[last], end)
+            size = abs(math.log(_area(head) / _area(tail)))
+            dist = float(np.hypot(*(_center(head) - _center(tail)))) / math.sqrt(_area(tail))
+            if gap > p.merge_max_gap_s + 1e-9 or size > math.log(p.merge_max_size_ratio) \
+                    or dist > p.merge_max_center_dist:
+                continue
+            cost = dist + size + gap / max(p.merge_max_gap_s, 1e-9)
+            if best is None or cost < best[0]:
+                best = (cost, c)
+        if best is None:
+            chains.append([tid])
+        else:
+            chains[best[1]].append(tid)
+    new_id = {tid: n for n, chain in enumerate(sorted(chains, key=lambda ch: frames_of[ch[0]][0]), 1)
+              for tid in chain}
+    merged = np.vectorize(lambda t: new_id.get(int(t), 0), otypes=[int])(a) if a.size else a.copy()
+    return TrackingResult(multi=result.multi, assignment=merged, boxes=result.boxes, params=p,
+                          duplicates_dropped=result.duplicates_dropped,
+                          fragments_merged=len(new_id) - len(chains))
 
 
 def annotate_events(events: list[Event], result: TrackingResult, subject_id: int | None) -> None:

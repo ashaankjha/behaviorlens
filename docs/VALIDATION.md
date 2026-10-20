@@ -488,3 +488,81 @@ Because the frame review pointed at the seated thresholds, an 8-setting sweep ov
 - Labels are incomplete for stand-ups (unlabelled rises at sequence starts and after *falling*), so raw precision underestimates; the skeleton reference for `hand_raised` is itself noisy for seated or bent people, so its recall is a lower bound.
 - All adjudication was done by the authoring agent.
 - **This is engineering evidence, not clinical validation.**
+
+## Frontal posture thresholds and track merging (Phase 3, pre-registered)
+
+Run date: 2026-10-20. **Question:** the fixed-camera frame review (*Held-out disagreements*, LEARNINGS M42, M44) pointed at two levers: (1) the seated thresholds, chosen on elevated Charades views, leave frontal seated frames *ambiguous*; (2) one person split into several tracks across untracked gaps loses frames outside the subject track. Does either lever, selected on the tune split under a rule written in advance, improve detection on held-out and never-seen footage without weakening the H-03 control?
+
+**Code added for this cycle (behaviour unchanged by default).** `TrackingParams.merge_fragments` (default **off**) runs `tracking.merge_fragments` after tracking: tracks are taken in order of first appearance, and each joins the best-matching chain that **ended before it started** (never a chain present in any frame it is present in), within `merge_max_gap_s = 10`, `merge_max_center_dist = 1.0` track sizes and `merge_max_size_ratio = 2.0` (median box over 3 frames at each end). These gate values were set a priori from the existing tracking gate (same distance unit) and were not tuned. Tests: `tests/test_tracking.py` (fragmented single person merges and regains its stand-up; people taking turns at different positions or sizes stay apart; people present at the same time are never merged, even with gates that accept any geometry; K5CRM pattern and a size-mismatched handover produce no stand-up). `scripts/fetch_fixed_camera_datasets.py pkummd1_fresh --limit 85 --stride 4` fetches the complement of the evaluated Phase 1 subset; `scripts/tune_grid.py --tracking-params` scores a grid with tracking overrides.
+
+### Pre-registration (written and committed before any tune result for this grid was computed)
+
+> Disclosure: the levers come from viewing errors (fixed-camera holdout review, and an exploratory 8-setting tune-only seated sweep where `seated_max_drop = 0.45` raised pooled-tune F1 0.629 → 0.725). This is the **third use** of the existing pooled holdout (rules-v0.3 measurement, Phase 2, now). The fresh set below has never been viewed or scored by anyone.
+>
+> **Data.** Pooled **tune** split = tune halves of Charades (legacy key), UTKinect, PKU-MMD Phase 1 (the evaluated 153-video subset, `--limit 85 --stride 4`) and Phase 2 (front view), as in Phase 2. **Fresh confirmation set** = `pkummd1_fresh`: every labelled Phase 1 front-view video **not** in that subset (206 videos, all scored, no split), same source, labels and transcoding. It is fetched and its landmarks are extracted, but no rule output, frame or result from it is looked at until the single final confirmation scoring below. Proceed with confirmation only if ≥ 150 fresh videos were fetched (report the count).
+>
+> **Fixed.** `pose_landmarker_lite`, 5 fps, tracked attribution (rules-v0.3), all other RuleParams and TrackingParams at rules-v0.3 values, merge gates as above, `--tol 1.0`.
+>
+> **Grid (48 settings).** `seated_max_drop` ∈ {0.35, 0.40, 0.45} × `seated_max_hip_angle_deg` ∈ {140, 148} × `seated_max_knee_angle_deg` ∈ {130, 140} × `seated_drop_ceiling` ∈ {0.5, 0.6} × `merge_fragments` ∈ {false, true}. rules-v0.3 is (0.35, 140, 130, 0.5, false).
+>
+> **Objective.** Highest pooled-tune `standing_transition` F1 (micro, from pooled counts). **Guard:** pooled-tune `hand_raised` F1 against labels must not fall more than 0.02 below rules-v0.3's. **Ties** (F1 within 0.005 of the best): fewer pooled-tune false positives, then fewest parameters changed from rules-v0.3 (`merge_fragments` counts as one), then the smallest total distance from rules-v0.3 in grid steps.
+>
+> **Scoring, once each.** The selected setting **S** and rules-v0.3 (**C**) on the existing pooled holdout (per dataset and pooled) and on the fresh set; **A** (v0.2 attribution, masking off) on the fresh set for context. 95 % Wilson intervals. If S changes both levers, single-lever rows are reported afterwards as *post-hoc* and do not enter the decision.
+>
+> **Adoption rule (decided now).** Recommend adopting S as rules-v0.4 only if **all** hold: (1) fresh-set `standing_transition` F1(S) − F1(C) ≥ +0.01; (2) pooled-holdout F1(S) ≥ F1(C) − 0.02 (not worse beyond noise); (3) `hand_raised` label F1 on the fresh set and on the holdout not more than 0.02 below C; (4) H-03: if S merges tracks, every Charades detection (all splits) that S produces and C does not is viewed, and none stitches evidence from two different people; and Charades held-out false positives do not increase. If (1)–(3) hold for S but (4) fails, re-score nothing: recommend only the seated part, flagged as not separately confirmed. Otherwise recommend keeping rules-v0.3. `config.py` defaults and `ALGORITHM_VERSION` are not changed in this cycle either way; adoption is the maintainer's decision.
+>
+> **Also reported.** Whether S changes Charades (elevated, handheld) behaviour on either split, and whether one threshold set can plausibly serve both geometries. A sample of fresh-set and holdout disagreements is reviewed visually after scoring (scratch only, never committed).
+
+> **Amendment 1 (committed before any tune result for this grid was computed).** Google Drive's per-file download quota blocked 61 of the 153 evaluated Phase 1 videos and 75 of the 206 fresh ones (HTTP 200 with a "Quota exceeded" page; the fetcher now rejects it, `DriveQuotaError`). Which files were blocked depends on download order, not on any result. So: (a) PKU-MMD Phase 1 in this cycle is the **92 videos available at this commit** (0002–0086, 0090, 0094, 0106, 0126, 0194, 0226, 0230: 46 tune, 46 holdout); the other three datasets are complete. Selection and the one holdout scoring use exactly these, and videos fetched later are not added to this cycle's tune or holdout. Phase 2 tune and holdout numbers are therefore not directly comparable to this cycle's; the comparison that matters, S against C, is paired on the same videos. (b) The fresh set rule stands: score it once, only when ≥ 150 fresh videos are present. If it stays below 150, the verdict is **"confirmation deferred (n < 150)" with no adoption recommendation**, and the fetch/extract commands for the remainder are documented for a later session.
+
+### Phase 3 selection on the pooled tune split
+
+Pooled tune split under Amendment 1: **283 videos, 80 `standing_transition` windows** (Charades 9, UTKinect 7, PKU-MMD P1 14, P2 50). All 48 settings pass the `hand_raised` guard (label F1 0.137–0.138 against C's 0.138). Best pooled-tune F1 0.709; six settings lie within 0.005 of it, and the tie-break (fewest tune false positives) selects:
+
+> **S: `seated_max_drop = 0.45`**, all other RuleParams and TrackingParams at rules-v0.3 (`seated_max_hip_angle_deg = 140`, `seated_max_knee_angle_deg = 130`, `seated_drop_ceiling = 0.5`, `merge_fragments = false`).
+
+| Tune (283 videos) | Recall | Precision | FP | F1 | Charades | UTKinect | PKU-MMD P1 | PKU-MMD P2 |
+|---|---|---|---|---|---|---|---|---|
+| C rules-v0.3 | 0.70 (56/80) | 0.55 (56/101) | 45 | 0.619 | 1/9, 1/1 | 3/7, 3/3 | 11/14, 11/19 | 41/50, 41/78 |
+| **S** | 0.78 (62/80) | 0.65 (62/95) | 33 | **0.709** | 1/9, 1/1 | 4/7, 4/4 | 13/14, 13/18 | 44/50, 44/72 |
+| *merge only (C + merge)* | 0.70 (56/80) | 0.55 (56/102) | 46 | 0.615 | 1/9, 1/2 | 3/7, 3/3 | 11/14, 11/19 | 41/50, 41/78 |
+| *S + merge* | 0.78 (62/80) | 0.65 (62/96) | 34 | 0.705 | 1/9, 1/2 | 4/7, 4/4 | 13/14, 13/18 | 44/50, 44/72 |
+
+(Each row is recall then precision. The italic rows are grid rows shown for context; they are not selections.) The other ties differ only in the hip or knee threshold, or in a ceiling of 0.6 that buys one stand-up for four false positives. **Track merging adds nothing on the tune half**: no tune stand-up depends on a fragmented track, and it adds one Charades false positive (reviewed below). **The seated change does not alter Charades tune** (1/9, 1/1 either way). This repeats the exploratory lead on the reduced tune set (0.629 → 0.725 on the full Phase 2 tune set), which is expected, since it is the same lever chosen on overlapping data.
+
+### Phase 3 held-out half (third use, scored once for S and C)
+
+Holdout under Amendment 1: Charades 10, UTKinect 13, PKU-MMD P1 18 and P2 57 stand-up windows. 95 % Wilson intervals in brackets.
+
+| Holdout | Recall | Precision | FP | Sit-down conf. | F1 | `hand_raised` label F1 |
+|---|---|---|---|---|---|---|
+| C rules-v0.3 | 0.63 (62/98) [0.53–0.72] | 0.55 (62/113) [0.46–0.64] | 51 | 5 | 0.588 | 0.112 |
+| **S** | **0.74 (73/98) [0.65–0.82]** | **0.68 (73/108) [0.58–0.76]** | **35** | 3 | **0.709** | 0.112 |
+| *C + merge (post-hoc, not selected)* | 0.64 (63/98) | 0.55 (63/114) | 51 | 5 | 0.594 | 0.118 |
+
+| Per dataset (recall · precision) | Charades | UTKinect | PKU-MMD P1 | PKU-MMD P2 |
+|---|---|---|---|---|
+| C | 2/10 · 2/5 | 10/13 · 10/11 | 11/18 · 11/15 | 39/57 · 39/82 |
+| S | 2/10 · 2/5 | 10/13 · 10/11 | 15/18 · 15/18 | 46/57 · 46/74 |
+
+**The tune gain transferred to the holdout**: +11 stand-ups and −16 false positives, with the recall and precision intervals now barely overlapping. This differs from Phase 2, whose temporal-parameter grid did not transfer (M43). All of the change comes from PKU-MMD (frontal, hip-height camera). **Charades is unchanged on both splits** (holdout 2/10, 2/5; tune 1/9, 1/1): with `seated_max_drop` 0.45 the extra seated frames come from frontal, foreshortened thighs, which the elevated handheld Charades views rarely produce. On this evidence one threshold set serves both geometries. The caveat is that Charades has only 19 stand-ups and mostly unobservable legs, so "no change there" is weak evidence either way. UTKinect s10_e01 (drop ≈ 0.5 at the ceiling) is still missed, as expected with `seated_drop_ceiling = 0.5`.
+
+**Disagreements viewed (scratch only, never committed).** S's 4 new held-out false positives: **3 rule errors on people seated and still** (P1 0027, P2 A12N07, P2 A24N07). These are the same failure class as the earlier frontal seated false positives; S does not create a new one. The fourth (P1 0007, 65.0–66.2 s) precedes a **real, unlabelled rise** at about 67 s. Sampled new hits (A11N12, the miss diagnosed in Phase 2, plus P1 0013, 0043, 0077) are clear frontal stand-ups.
+
+**Track merging fails the H-03 check (adoption condition 4).** Merging is not part of S, but it was in the grid and is the M44 lever, so it was reviewed. On the holdout (post-hoc) it recovers exactly the motivating miss, UTKinect s03_e01 (10 → 11 of 13), and changes nothing else. On Charades (all 126 videos) it joins tracks in 51 videos and adds one stand-up false positive (6HR54, 13.8–14.8 s) and 6 hand detections in 5 videos. **Frame review of 6HR54: the merged subject stitches two people.** A seated woman and a standing girl at a table are each detected only intermittently (usually one of the two per frame), and the frame-to-frame tracker already alternates each track between them (T4 and T5 both switch person, 11–18 s). Merging then joins T4 and T5 into the subject track, and the seated frames of one person plus the standing frames of the other produce a stand-up nobody performed: exactly the K5CRM hazard. The root cause is in rules-v0.3 tracking itself (identity alternation when MediaPipe returns one of two nearby people per frame); merging amplifies it by making such a track the subject. **Do not enable `merge_fragments` on multi-person or handheld footage.** A merge restricted to clips that never show two people at once would still be blind to this case, because here the two people are rarely detected in the same frame.
+
+### H-03 audit of rules-v0.3 tracking (shipped defaults, merge off)
+
+Prompted by 6HR54 (above): if the tracker alternates a track between two intermittently detected people, the **shipped** subject track can carry evidence from two people even without merging. This is a bounded audit, not a selection; no default changed.
+
+**Method.** All 126 Charades videos (the multi-person, handheld data; 101 have > 1 track) under rules-v0.3, 77 detected events (71 `hand_raised`, 6 `standing_transition`). A box-jump proxy flagged 122 of 126 clips (handheld noise) and missed the 6HR54 switch, where the two people's boxes nearly coincide, so the audit used a landmark proxy instead: the median displacement of nose, shoulders and hips between consecutive subject frames, in units of track size, within [event start − 3 s, event end + 1 s]. Calibration: the real 6HR54 switches measure 1.05–1.59. **Flagged: max jump ≥ 0.8 in a clip with ≥ 2 tracks → 19 events**, each viewed with the subject box drawn (scratch only).
+
+| Finding (19 flagged events viewed) | Events | Videos |
+|---|---|---|
+| **Built from two different people** | **4** (all `hand_raised`) | DB4WX (seated person ↔ standing woman), HOI88 ×3 (woman at a table ↔ person lying on the sofa behind) |
+| Track switches between a person and a phantom pose on an object | 5 (3 events sit on the phantom itself: 06EDS stove, TCV1W door edge, TU3IG counter object) | 03OQS, 06EDS, 8OHDL, TCV1W, TU3IG |
+| One person throughout (jump from fast or partial pose) | 10 | 406LH, E64R4, E6IL3 ×2, MI76A ×2, PKEZI, V1PRP, VIKQG, WXMTI |
+
+**Measured exposure: 4 of 77 rules-v0.3 Charades events (5 %) are cross-person, all hand raises; none of the 6 stand-ups.** A further 5 come from a person/phantom switch (H-03's phantom-pose cause). This is a **lower bound**: the 58 unflagged events were not viewed, and a switch between two similarly posed, overlapping people can jump less than 0.8. Fixed-camera datasets were not audited (mostly single-subject).
+
+**Candidate mitigation (not shipped; needs a pre-registered tune/holdout cycle).** Treat subject frames after a large landmark-level identity jump as unobservable for a short window, or split the track at such jumps before subject selection. Both would remove the 6HR54 and HOI88 mechanism, but the jump threshold trades against fast real movement (10 of 19 flagged events were one person), so its recall cost must be measured on the tune split with "no tune hit lost" as a constraint (as for camera motion, M30). Draft risk entry updated: `docs/regulatory/risk_management.md` H-03 and gap G-12.

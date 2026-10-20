@@ -186,6 +186,17 @@ class TrackingParams:
     duplicate_iou: float = 0.7
     # Tracks seen for at least this long count as a person in the scene (warning, subject list).
     substantial_min_s: float = 1.0
+    # Opt-in (experimental, off in rules-v0.3): after tracking, join tracks that are never present
+    # at the same time and where one starts close to where the other ended, at a similar size
+    # (tracking.merge_fragments). Repairs one person split across untracked gaps (LEARNINGS M44).
+    # Tracks that coexist in any frame are never joined (hazard H-03).
+    merge_fragments: bool = False
+    # Merge gates: the later track must start within this many seconds of the earlier one's end,
+    merge_max_gap_s: float = 10.0
+    # with its centre within this many track sizes (sqrt of box area) of where the earlier one ended,
+    merge_max_center_dist: float = 1.0
+    # and box areas differing by at most this factor (medians over the frames at the junction).
+    merge_max_size_ratio: float = 2.0
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

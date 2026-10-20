@@ -6,7 +6,8 @@ caches must already exist (run scripts/validate_real_video.py --dataset ... firs
 
 Usage:
     python scripts/tune_grid.py --dataset charades,utkinect,pkummd1,pkummd2 --split tune \\
-        --grid '{"dwell_s": [0.4, 0.6, 0.8, 1.0], "max_transition_s": [3, 5, 7]}' --json grid.json
+        --grid '{"dwell_s": [0.4, 0.6, 0.8, 1.0], "max_transition_s": [3, 5, 7]}' --json grid.json \\
+        [--tracking-params '{"merge_fragments": true}']
 
 Output: one row per setting with pooled and per-dataset standing_transition / hand_raised
 scores (scripts/datasets.score_events).
@@ -43,11 +44,11 @@ def settings(grid: dict[str, list]) -> list[dict]:
     return [dict(zip(keys, vals)) for vals in itertools.product(*(grid[k] for k in keys))]
 
 
-def clip_detections(job: tuple[str, str, str, list[dict]]) -> tuple[str, list[dict[str, list]]]:
+def clip_detections(job: tuple[str, str, str, list[dict], dict]) -> tuple[str, list[dict[str, list]]]:
     """Detections per setting for one clip (subject track computed once)."""
-    cache, clip_id, attribution, overrides = job
+    cache, clip_id, attribution, overrides, tracking = job
     base = RuleParams().to_dict()
-    seq = vrv.Analyzer(attribution, RuleParams(), TrackingParams()).sequence(cache, clip_id)
+    seq = vrv.Analyzer(attribution, RuleParams(), TrackingParams.from_dict(tracking)).sequence(cache, clip_id)
     out = []
     for o in overrides:
         res = analyze_pose(seq, RuleParams.from_dict({**base, **o}), clip_id)
@@ -65,8 +66,10 @@ def main() -> None:
     ap.add_argument("--fps", type=float, default=config.DEFAULT_SAMPLE_FPS)
     ap.add_argument("--tol", type=float, default=1.0)
     ap.add_argument("--workers", type=int, default=4)
+    ap.add_argument("--tracking-params", default="{}", help="JSON overrides for TrackingParams")
     ap.add_argument("--json")
     a = ap.parse_args()
+    tracking = vrv.parse_tracking(a.tracking_params).to_dict()
     grid = settings(json.loads(a.grid))
     mver = model_version(config.model_path())
     max_people = None if a.attribution == "legacy" else a.max_people
@@ -78,7 +81,7 @@ def main() -> None:
                 clips.append((name, rec, str(cache)))
             else:
                 print(f"no cache for {name}:{rec['video_id']} (run validate_real_video.py first)", file=sys.stderr)
-    jobs = [(c, r["video_id"], a.attribution, grid) for _, r, c in clips]
+    jobs = [(c, r["video_id"], a.attribution, grid, tracking) for _, r, c in clips]
     with ProcessPoolExecutor(max_workers=a.workers) as ex:
         dets = dict(ex.map(clip_detections, jobs, chunksize=4))
     rows = []
@@ -95,7 +98,8 @@ def main() -> None:
             row["datasets"][name] = {t: datasets.score_events(p[t]) for t in TYPES}
         rows.append(row)
     out = {"model_version": mver, "algorithm_version": config.ALGORITHM_VERSION, "split": a.split,
-           "attribution": a.attribution, "tolerance_s": a.tol, "clips": len(clips), "rows": rows}
+           "attribution": a.attribution, "tracking_params": tracking, "tolerance_s": a.tol,
+           "clips": len(clips), "rows": rows}
     if a.json:
         Path(a.json).write_text(json.dumps(out, indent=1))
     for r in rows:

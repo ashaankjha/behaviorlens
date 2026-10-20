@@ -102,7 +102,8 @@ def test_two_people_of_different_sizes_and_subject_choice():
     assert stats["subject_is_largest_ratio"] == pytest.approx(0.5)  # largest whenever in view
 
 
-def test_k5crm_pattern_no_false_stand_up_from_identity_switch():
+@pytest.mark.parametrize("tracking", [None, TrackingParams(merge_fragments=True)])
+def test_k5crm_pattern_no_false_stand_up_from_identity_switch(tracking):
     """Charades K5CRM mechanism: one person seated or low, a second standing person nearby.
     Per-frame largest-person attribution stitches seated frames of one person to standing
     frames of the other and proposes a standing_transition that nobody performed."""
@@ -116,7 +117,7 @@ def test_k5crm_pattern_no_false_stand_up_from_identity_switch():
     legacy = detect_all(multi.largest_person_sequence(), P, "s")
     assert any(e.event_type == "standing_transition" for e in legacy)  # the v0.2 false positive
 
-    result, tracked, seq = analyze_multi_pose(multi, P, "s")
+    result, tracked, seq = analyze_multi_pose(multi, P, "s", tracking)
     assert not any(e.event_type == "standing_transition" for e in result.events)
     t = result.stats["tracking"]
     assert t["substantial_tracks"] == 2 and t["largest_person_switches"] == 1
@@ -216,3 +217,97 @@ def test_multi_pose_sequence_roundtrip_and_largest_person(tmp_path):
     with pytest.raises(ValueError):
         MultiPoseSequence(timestamps_s=[0, 1], frame_indices=[0, 1], poses=np.zeros((2, 1, 33, 5)),
                           counts=[2, 0], sample_fps=1, duration_s=2)
+
+
+# ------------------------------------------------------------ fragment merging (opt-in, LEARNINGS M44)
+MERGE = TrackingParams(merge_fragments=True)
+
+
+def test_fragment_merging_is_off_by_default():
+    assert TrackingParams().merge_fragments is False
+
+
+def fragmented_stand_up(t):
+    """One person: seated, stands at ~2 s, then untracked 4-7 s and 11.4-14 s (longer than
+    max_gap_s), each time reappearing a little shifted. The longest fragment has no stand-up."""
+    if 4.0 <= t < 7.0 or 11.4 <= t < 14.0:
+        return []
+    cx = 0.40 if t < 4.0 else (0.43 if t < 11.4 else 0.41)
+    return [person(cx, 0.7, stand=0.0 if t < 2.0 else 1.0)]
+
+
+def test_fragmented_single_person_merges_into_one_track_and_keeps_the_stand_up():
+    multi = make_multi(20, people=fragmented_stand_up)
+    plain = track_people(multi)
+    assert len(plain.track_ids) == 3 and plain.fragments_merged == 0
+    merged = track_people(multi, MERGE)
+    assert merged.track_ids == [1] and merged.fragments_merged == 2
+    assert np.array_equal(merged.present(1), multi.counts > 0)  # every observed frame, gaps stay empty
+    assert merged.stats(1, "auto")["fragments_merged"] == 2
+
+    def stand_ups(tracking):
+        result, _, _ = analyze_multi_pose(multi, P, "s", tracking)
+        return [e for e in result.events if e.event_type == "standing_transition"]
+
+    assert stand_ups(TrackingParams()) == []  # the subject (longest fragment) excludes the stand-up
+    assert len(stand_ups(MERGE)) == 1
+
+
+@pytest.mark.parametrize("second", [
+    person(0.80, 0.7),  # same size, far away
+    person(0.42, 0.35),  # same place, a quarter of the area
+    person(0.80, 0.35),  # both
+])
+def test_people_taking_turns_at_different_positions_or_sizes_are_not_merged(second):
+    first = person(0.40, 0.7)
+    people = lambda t: [first] if t < 3 else ([] if t < 5.4 else [second] if t < 8 else [] if t < 10.4 else [first])
+    res = track_people(make_multi(13, people=people), MERGE)
+    ids = {tid: set(np.flatnonzero(res.present(tid))) for tid in res.track_ids}
+    second_frames = set(range(27, 40))
+    assert second_frames in ids.values()  # the second person keeps a track of their own
+    assert res.fragments_merged == 1  # only the first person's two appearances join
+    assert len(res.track_ids) == 2
+
+
+@pytest.mark.parametrize("seed", range(5))
+def test_people_present_at_the_same_time_are_never_merged(seed):
+    """Even with gates that accept any geometry, a merged track is never in one frame twice and
+    every original track maps whole onto one merged track."""
+    rng = np.random.default_rng(seed)
+    spans = [(float(a), float(a + d), float(x)) for a, d, x in
+             zip(rng.uniform(0, 8, 6), rng.uniform(0.6, 4, 6), rng.uniform(0.2, 0.8, 6))]
+    people = lambda t: [person(x, 0.6) for a, b, x in spans if a <= t < b]
+    multi = make_multi(12, people=people)
+    loose = TrackingParams(merge_fragments=True, merge_max_gap_s=100, merge_max_center_dist=100,
+                           merge_max_size_ratio=100)
+    plain, merged = track_people(multi), track_people(multi, loose)
+    for k in range(len(multi)):
+        ids = merged.assignment[k][merged.assignment[k] > 0]
+        assert len(ids) == len(set(ids)) == int(np.sum(plain.assignment[k] > 0))
+    for tid in plain.track_ids:
+        assert len(np.unique(merged.assignment[plain.assignment == tid])) == 1
+    for a, b in ((a, b) for a in plain.track_ids for b in plain.track_ids if a < b):
+        if np.any(plain.present(a) & plain.present(b)):
+            assert merged.assignment[plain.assignment == a][0] != merged.assignment[plain.assignment == b][0]
+
+
+def test_two_people_side_by_side_with_the_same_size_stay_two_tracks():
+    people = lambda t: [person(0.30, 0.6)] + ([person(0.36, 0.6)] if 2 <= t < 4 or 6 <= t < 8 else [])
+    res = track_people(make_multi(10, people=people), TrackingParams(
+        merge_fragments=True, merge_max_center_dist=100, merge_max_size_ratio=100))
+    assert np.all(res.people_per_frame() == make_multi(10, people=people).counts)
+    left = res.assignment[0][res.assignment[0] > 0][0]
+    assert all(left not in res.assignment[k][res.assignment[k] > 0][1:] for k in range(len(res.multi)))
+    assert len(res.track_ids) == 2  # the second person's two appearances join each other only
+
+
+def test_handover_to_a_different_person_after_a_gap_is_not_stitched_into_a_stand_up():
+    """A large seated person leaves; 2.5 s later (beyond max_gap_s, within max_transition_s) a
+    smaller person stands where they were. Merging must not join them (size gate), so no
+    standing_transition is attributed to anyone (H-03)."""
+    people = lambda t: [person(0.40, 0.9, stand=0.0)] if t < 4 else [] if t < 6.5 else [person(0.45, 0.45)]
+    multi = make_multi(10, people=people)
+    assert any(e.event_type == "standing_transition" for e in detect_all(multi.largest_person_sequence(), P, "s"))
+    result, tracked, _ = analyze_multi_pose(multi, P, "s", MERGE)
+    assert tracked.fragments_merged == 0
+    assert not any(e.event_type == "standing_transition" for e in result.events)
