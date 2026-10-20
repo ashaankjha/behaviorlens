@@ -133,6 +133,34 @@ def session_label(s: dict) -> str:
             f"{s['created_at'][:16].replace('T', ' ')} · {s['session_id'][:6]}")
 
 
+def subject_selector(session_id: str, analysis: dict | None) -> int | None:
+    """Subject track picker, shown only when more than one person was tracked.
+
+    Returns the chosen track ID, or None for the automatic choice.
+    """
+    trk = (analysis or {}).get("stats", {}).get("tracking") or {}
+    tracks = {t["track_id"]: t for t in trk.get("per_track", []) if t["substantial"]}
+    if len(tracks) < 2:
+        return None
+    auto = min(trk["per_track"], key=lambda t: (-t["score"], t["track_id"]))["track_id"]
+    options: list[int | None] = [None, *sorted(tracks)]
+    current = analysis["settings"].get("subject_track_id")
+
+    def label(tid: int | None) -> str:
+        # Each label embeds its track number, so labels stay unique (LEARNINGS M2).
+        if tid is None:
+            return f"Automatic: track #{auto} (greatest coverage × size)"
+        t = tracks[tid]
+        return f"Track #{tid} · in {t['coverage']:.0%} of frames · {t['first_s']:.1f}–{t['last_s']:.1f} s"
+
+    choice = st.selectbox("Subject (tracked person)", options, format_func=label, key=f"subject_{session_id}",
+                          index=options.index(current) if current in options else 0,
+                          help="Events are computed for this person only. Re-run analysis to apply.")
+    st.caption("Track numbers come from position continuity between sampled frames, not from recognizing "
+               "anyone. Render the pose overlay to see which number belongs to which person.")
+    return choice
+
+
 def status_stepper(status: str) -> None:
     if status == "failed":
         st.markdown("**Status:** :red[failed]")
@@ -279,7 +307,8 @@ with tab_review:
         overlay = store.path(session.get("overlay_relpath"))
         show_overlay = False
         if overlay and overlay.is_file():
-            show_overlay = st.toggle("Show pose overlay (sampled frames, low resolution)", key=f"ov_{session_id}")
+            show_overlay = st.toggle("Show pose overlay (sampled frames, low resolution; track numbers, "
+                                     "subject in green)", key=f"ov_{session_id}")
         video_path = overlay if show_overlay else preview
         if video_path and video_path.is_file():
             st.video(str(video_path), start_time=float(ss["seek"].get(session_id, 0.0)))
@@ -320,6 +349,7 @@ with tab_review:
             sustained = st.checkbox("Also suggest sustained standing (≥2 s)", d.enable_sustained_standing)
             params = RuleParams(visibility_threshold=vis, hand_raise_min_s=hmin, dwell_s=dwell,
                                 merge_gap_s=gap, enable_sustained_standing=sustained)
+            subject = None if synthetic else subject_selector(session_id, analysis)
             pending = store.pending_algorithm_count(session_id)
             confirm_ok = True
             if analysis and pending:
@@ -333,7 +363,7 @@ with tab_review:
                 bar = st.progress(0.0, text="Starting…")
                 try:
                     res = pipeline.run_analysis(
-                        store, session_id, AnalysisSettings(sample_fps=fps, rules=params),
+                        store, session_id, AnalysisSettings(sample_fps=fps, rules=params, subject_track_id=subject),
                         progress=lambda p, m: bar.progress(min(max(p, 0.0), 1.0), text=m))
                     flash("success", f"Analysis complete: {res['added']} new suggestion(s); "
                                      f"{res['replaced_pending']} unreviewed replaced; "

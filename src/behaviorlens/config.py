@@ -37,6 +37,8 @@ DURATION_TOLERANCE_S = 0.5
 
 DEFAULT_SAMPLE_FPS = 5.0
 SAMPLE_FPS_CHOICES = (5.0, 10.0)
+# Pose Landmarker num_poses for analysis. People are then tracked across frames (tracking.py).
+DEFAULT_MAX_PEOPLE = 4
 
 EVENT_TYPES = ("hand_raised", "standing_transition", "sustained_standing")
 MANUAL_EVENT_TYPES = EVENT_TYPES + ("other_observable",)
@@ -120,9 +122,54 @@ class RuleParams:
 
 
 @dataclass(frozen=True)
+class TrackingParams:
+    """Frame-to-frame person tracking (tracking.py). Identity comes from position and size
+    continuity only; there is no appearance or face model."""
+
+    # A lost track can be re-identified for this long; after that a new track ID starts.
+    # (1, 2 and 4 s tied on the tune split; the a-priori 2 s was kept.)
+    max_gap_s: float = 2.0
+    # Association gate, in units of the track's size (sqrt of its landmark bounding-box area).
+    max_center_dist: float = 1.0
+    # The gate widens by this much per second the track has been unseen.
+    gate_growth_per_s: float = 1.0
+    # A pair whose (predicted) boxes overlap at least this much is always a candidate match.
+    min_iou: float = 0.1
+    # Boxes whose areas differ by more than this factor are never the same person. Selected on the
+    # Charades/UCF101 tune split from {3, 6, 100}: a real person's landmark box often jumps >3x between
+    # frames (hallucinated legs, arm raises), so size works as a soft cost (size_weight), not a gate.
+    max_size_ratio: float = 100.0
+    # Cost = (1 - IoU) + dist_weight * centre distance + size_weight * |log area ratio|
+    #        + stale_weight * seconds since the track was last seen (recent tracks win ties).
+    dist_weight: float = 0.5
+    size_weight: float = 0.5
+    stale_weight: float = 1.0
+    # Detections in one frame overlapping more than this are duplicates of one person
+    # (0.7 beat 0.5 on tune-split precision).
+    duplicate_iou: float = 0.7
+    # Tracks seen for at least this long count as a person in the scene (warning, subject list).
+    substantial_min_s: float = 1.0
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict | None) -> "TrackingParams":
+        if not data:
+            return cls()
+        known = {f for f in cls.__dataclass_fields__}
+        return cls(**{k: v for k, v in data.items() if k in known})
+
+
+@dataclass(frozen=True)
 class AnalysisSettings:
     sample_fps: float = DEFAULT_SAMPLE_FPS
     rules: RuleParams = field(default_factory=RuleParams)
+    max_people: int = DEFAULT_MAX_PEOPLE
+    tracking: TrackingParams = field(default_factory=TrackingParams)
+    # None = automatic subject (greatest coverage x mean size); otherwise a reviewer-chosen track ID.
+    subject_track_id: int | None = None
 
     def to_dict(self) -> dict:
-        return {"sample_fps": self.sample_fps, "rules": self.rules.to_dict()}
+        return {"sample_fps": self.sample_fps, "rules": self.rules.to_dict(), "max_people": self.max_people,
+                "tracking": self.tracking.to_dict(), "subject_track_id": self.subject_track_id}

@@ -2,7 +2,7 @@
 
 A running record of what we have learned building BehaviorLens: environment gotchas, library behavior, mistakes and their fixes, and the decisions behind the design. **Append to it whenever you learn something non-obvious.** See "How to update" at the end.
 
-Last updated: 2026-10-18
+Last updated: 2026-10-20
 
 ---
 
@@ -65,6 +65,10 @@ Last updated: 2026-10-18
 | M23 | Skill commands used `SCR="$SCRATCHPAD/e2e"`, assuming the variable was set | In a cloud shell `$SCRATCHPAD` was empty, so the next line would have run `rm -rf /e2e` | Never let a path in an `rm -rf` depend on an env var that may be unset. Use `${SCRATCHPAD:?…}` so the command fails loudly. Fixed in the `e2e-verify-streamlit` and `extract-chatgpt-share` skills. |
 | M24 | I wrote "the only network access is the model download" from my own code, without checking the framework | The audit found Streamlit binding `0.0.0.0` and calling `checkip.amazonaws.com` on every start (AUDIT D1) | Privacy and network claims must be **observed**: watch the startup log and listening sockets (`/proc/net/tcp` when `ss` is missing), and try a non-loopback connection. Pin the framework behaviour in config (`server.address = "localhost"`) and in a test. |
 | M25 | Traceability rows were marked ✅ when the cited test didn't assert the claim (multi-person warning, UI gates, CSV parser) | The clean-room audit downgraded them (AUDIT D2) | A ✅ row must name a test whose assertions cover the claim's exact wording. An independent auditor session is cheap and catches overclaiming that the author can't see. |
+| M26 | I tracked people on the box of their *visible* landmarks, with a hard 3× size gate | The first tracked run fragmented single people into many tracks (tune median subject coverage 0.64 against 0.94 detected) and halved stand-up recall | A real person's visible-landmark box jumps between frames as legs flicker in and out of visibility (size ratio p99 4.3×). Associate on the box of **all** landmark positions (p99 2.9×) and use size as a soft cost, not a gate. Measure frame-to-frame feature stability on real clips before choosing gates. |
+| M27 | I counted v0.2's NY5R2 stand-up as a true positive | Tracking "lost" it. The frames showed v0.2's seated evidence came from a **phantom pose on a backpack** and its standing evidence from the real person | A hit can be right for the wrong reason. When a change loses a hit, check which person or frames supplied the evidence (per-frame track IDs alongside states) before calling it a regression. Report raw and attribution-correct numbers. |
+| M28 | I expected `num_poses = 4` to be a pure superset of `num_poses = 2` | Same rules with per-frame largest person: holdout 3/10, 3/11 against 4/10, 4/10. MediaPipe's landmarks change when more poses are requested, and phantom poses on furniture appear | `num_poses` changes the model's output, so it belongs in every landmark cache key (`*_multiN.npz`, `_pose_cache_path(..., max_people)`). Score it separately (`--attribution largest`) so tracking isn't credited or blamed for it. |
+| M29 | I planned to stitch non-overlapping tracks to undo fragmentation | On a tune clip (03OQS) a non-overlapping handoff was a **different person**, detected only once the first left. Stitching would recreate the K5CRM-style error | Without appearance features, sequential handoffs are ambiguous. Prefer a new track ID (unobservable) over a guessed identity. Pan-induced splits (HIOY0) need camera-motion handling, not looser identity rules. |
 
 ## 4. Design decisions (and why)
 
@@ -81,6 +85,7 @@ Last updated: 2026-10-18
 - **Thumbnails and overlays** live under `data/sessions/<id>/` so Delete session removes them, and they're never exported.
 
 - **Independent audit plus parallel experiment paid off:** the audit predicted the validation-cache bug (D3) that the experiment session independently hit and fixed (M21). Both children stayed on-brief with standalone prompts. Merge conflicts only happened in `docs/LEARNINGS.md` (concurrent M-numbers), resolved by renumbering at merge.
+- **Person tracking, then rules on one subject track** (2026-10-20, `tracking.py`). Detect up to 4 people and link them with geometry only (all-landmark box IoU, centre distance after constant-velocity prediction, a soft size cost, a staleness cost, exact per-frame assignment, and a 2 s re-identification window). The subject is the track with the greatest coverage × size, or the reviewer's choice. Frames without the subject are unobservable. No appearance or face model, by PRD. Tracking runs after the landmark cache, so changing the subject never re-runs inference. Held-out: it removes identity-switch false positives (6→3) but lowers recall (4/10→2/10; one lost hit was a phantom-switch artifact, M27). Rejected: stitching non-co-occurring tracks (M29).
 - **Parallel work goes to child cloud sessions on separate branches** and is merged by the parent after review. First use: a clean-room README audit (`audit/clean-room-readme`) and a pose-model comparison (`experiment/pose-model-comparison`).
 
 ## 5. Verification recipes that worked
@@ -98,7 +103,7 @@ Last updated: 2026-10-18
 
 - ~~How do thresholds behave on real moving footage?~~ Answered in `docs/VALIDATION.md`: modest (held-out stand-up recall 0.40) and bounded by leg visibility.
 - Do front-on clinic-style recordings (the PRD's intended setup) score much higher than Charades home video? Use the README "own staged clip" procedure.
-- Would person tracking plus camera-motion detection remove most of the remaining stand-up false positives (pans, a second person)?
+- ~~Would person tracking remove the second-person false positives?~~ Yes on K5CRM (`docs/VALIDATION.md`, *Person tracking*). Open: does camera-motion detection fix the pan-induced track splits (HIOY0) and so recover the lost recall? Can phantom poses on furniture be rejected (NY5R2, a frequent source of extra "substantial" tracks)?
 - ~~Whether `pose_landmarker_full` or `pose_landmarker_heavy` improves leg visibility.~~ Answered: not with v0.2 thresholds (M22, `docs/VALIDATION.md`).
 - Would 10 fps with temporal parameters re-selected on the tune split beat 5 fps on stand-ups? (Untuned 10 fps: holdout recall 6/10, precision 6/18.)
 - Would a model-specific `visibility_threshold`, selected on the tune split, make `heavy` competitive? The post-hoc diagnostic suggests not.

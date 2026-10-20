@@ -10,6 +10,7 @@ import json
 import logging
 import shutil
 from collections.abc import Callable
+from functools import partial
 from pathlib import Path
 from typing import Any, BinaryIO
 
@@ -17,11 +18,12 @@ import cv2
 import numpy as np
 
 from . import config, demo_generator
-from .config import AnalysisSettings, RuleParams
+from .config import AnalysisSettings, RuleParams, TrackingParams
 from .event_rules import detect_all, observability_stats
 from .models import NUM_LANDMARKS, VISIBILITY, X, Y, AnalysisResult, PoseSequence, VideoMeta, new_id
 from .pose import MediaPipePoseEstimator, PoseEstimator
 from .storage import Store
+from .tracking import MultiPoseSequence, TrackingResult, annotate_events, track_people
 from .video_io import (
     FrameWriter,
     VideoValidationError,
@@ -43,14 +45,28 @@ def _noop(_: float, __: str) -> None:
 
 
 # ---------------------------------------------------------------- analysis
-def analyze_pose(seq: PoseSequence, params: RuleParams, session_id: str) -> AnalysisResult:
+def analyze_pose(seq: PoseSequence, params: RuleParams, session_id: str,
+                 tracking: dict[str, Any] | None = None) -> AnalysisResult:
+    """Run the rules on one person's sequence. ``tracking`` (from ``TrackingResult.stats``)
+    says that ``seq`` is one tracked subject among the people in view."""
     stats = observability_stats(seq, params)
     warnings: list[str] = []
     if len(seq) == 0 or stats["pose_detected_ratio"] == 0:
         warnings.append("No person was detected in any sampled frame, so no events could be suggested.")
     elif stats["pose_detected_ratio"] < 0.5:
-        warnings.append(f"A person was detected in only {stats['pose_detected_ratio']:.0%} of sampled frames.")
-    if stats["multi_person_frame_ratio"] > 0:
+        who = "The subject" if tracking and tracking["substantial_tracks"] > 1 else "A person"
+        warnings.append(f"{who} was detected in only {stats['pose_detected_ratio']:.0%} of sampled frames.")
+    if tracking is not None:
+        stats["tracking"] = tracking
+        if tracking["substantial_tracks"] > 1:
+            how = "by the reviewer" if tracking["subject_selection"] == "reviewer" else \
+                "automatically (greatest coverage × size)"
+            warnings.append(
+                f"{tracking['substantial_tracks']} people were tracked. Events are computed for subject "
+                f"track #{tracking['subject_track_id']} only ({tracking['subject_coverage']:.0%} of frames, "
+                f"chosen {how}). Track numbers come from position continuity between frames, not recognition: "
+                "check the pose overlay and choose another subject under Analysis controls if needed.")
+    elif stats["multi_person_frame_ratio"] > 0:
         warnings.append(
             f"More than one person was detected in {stats['multi_person_frame_ratio']:.0%} of frames. "
             "Events are attributed to the largest detected person; attribution is not reliable."
@@ -63,6 +79,56 @@ def analyze_pose(seq: PoseSequence, params: RuleParams, session_id: str) -> Anal
     events = detect_all(seq, params, session_id)
     stats["event_counts"] = {t: sum(e.event_type == t for e in events) for t in config.EVENT_TYPES}
     return AnalysisResult(events=events, warnings=warnings, stats=stats)
+
+
+def analyze_multi_pose(multi: MultiPoseSequence, params: RuleParams, session_id: str,
+                       tracking: TrackingParams | None = None, subject_track_id: int | None = None,
+                       ) -> tuple[AnalysisResult, TrackingResult, PoseSequence]:
+    """Track everyone, then run the rules on one subject track only.
+
+    The subject is ``subject_track_id`` when it exists, otherwise the track with the
+    greatest coverage × mean bounding-box size. Frames without the subject are
+    unobservable for the rules (never filled in from another person).
+    """
+    tracked = track_people(multi, tracking)
+    subject, selection, notes = tracked.auto_subject(), "auto", []
+    if subject_track_id is not None:
+        if subject_track_id in tracked.track_ids:
+            subject, selection = subject_track_id, "reviewer"
+        else:
+            notes.append(f"Requested subject track #{subject_track_id} does not exist in this analysis; "
+                         "the automatic subject was used instead.")
+    seq = tracked.track_sequence(subject)
+    result = analyze_pose(seq, params, session_id, tracking=tracked.stats(subject, selection))
+    annotate_events(result.events, tracked, subject)
+    result.warnings[:0] = notes
+    return result, tracked, seq
+
+
+def extract_multi_pose(video_path: Path, meta: VideoMeta, estimator: PoseEstimator, sample_fps: float,
+                       progress: Progress = _noop) -> tuple[MultiPoseSequence, list[str]]:
+    """Every detected person per sampled frame. Estimators without ``detect_all`` (single
+    person) contribute at most one detection per frame."""
+    warnings: list[str] = []
+    detect_all = getattr(estimator, "detect_all", None)
+    times, indices, frames = [], [], []
+    total = max(1, int(meta.duration_s * min(sample_fps, meta.fps)))
+    for k, (frame_idx, t, frame) in enumerate(iter_sampled_frames(video_path, meta, sample_fps, warnings)):
+        if detect_all is not None:
+            people = detect_all(frame, t)
+        else:
+            lms, _ = estimator.detect(frame, t)
+            people = [] if lms is None else [lms]
+        times.append(t)
+        indices.append(frame_idx)
+        frames.append(people)
+        if k % 5 == 0:
+            progress(min(0.99, (k + 1) / total), f"Pose inference: frame {k + 1}/{total}")
+    if not times:
+        raise VideoValidationError("No frames could be decoded from this video.")
+    multi = MultiPoseSequence.from_frames(times, indices, frames, sample_fps=min(sample_fps, meta.fps),
+                                          duration_s=meta.duration_s, data_mode="video_inference")
+    return multi, warnings
 
 
 def extract_pose(video_path: Path, meta: VideoMeta, estimator: PoseEstimator, sample_fps: float,
@@ -143,9 +209,18 @@ def create_demo_session(store: Store) -> str:
     return session_id
 
 
-def _pose_cache_path(store: Store, checksum: str, model_version: str, sample_fps: float) -> Path:
+def _pose_cache_path(store: Store, checksum: str, model_version: str, sample_fps: float,
+                     max_people: int | None = None) -> Path:
+    """Landmark cache. ``max_people`` set: all-people landmarks (num_poses changes MediaPipe's
+    output, so it is part of the key); tracking runs after the cache, on every analysis."""
     safe_model = model_version.replace("@", "_").replace("/", "_")
-    return store.cache_dir() / f"{checksum}_{safe_model}_{sample_fps:g}fps.npz"
+    multi = f"_multi{max_people}" if max_people is not None else ""
+    return store.cache_dir() / f"{checksum}_{safe_model}_{sample_fps:g}fps{multi}.npz"
+
+
+def tracks_path(store: Store, session_id: str, analysis_id: str) -> Path:
+    """All tracked people of one analysis (for the overlay); removed with the session."""
+    return store.session_dir(session_id) / f"tracks_{analysis_id}.npz"
 
 
 def run_analysis(store: Store, session_id: str, settings: AnalysisSettings | None = None,
@@ -164,6 +239,7 @@ def run_analysis(store: Store, session_id: str, settings: AnalysisSettings | Non
     try:
         warnings: list[str] = []
         model_ver = None
+        tracked: TrackingResult | None = None
         if session["data_mode"] == "synthetic":
             fixture = store.session_dir(session_id) / "pose_fixture.npz"
             seq = PoseSequence.load_npz(fixture)
@@ -171,29 +247,40 @@ def run_analysis(store: Store, session_id: str, settings: AnalysisSettings | Non
                 warnings.append(f"Synthetic fixture is sampled at {seq.sample_fps:g} fps; "
                                 f"requested {settings.sample_fps:g} fps ignored.")
             progress(0.5, "Loaded synthetic pose fixture (no inference)")
+            result = analyze_pose(seq, settings.rules, session_id)
         else:
             video = store.path(session["video_relpath"])
             if video is None or not video.is_file():
                 raise VideoValidationError("The source video for this session is missing. Re-upload it.")
             meta = probe_video(video)
-            factory = estimator_factory or MediaPipePoseEstimator
+            factory = estimator_factory or partial(MediaPipePoseEstimator, max_people=settings.max_people)
             estimator = factory()
             try:
                 model_ver = estimator.model_version
-                cache = _pose_cache_path(store, session["checksum"], model_ver, settings.sample_fps)
+                cache = _pose_cache_path(store, session["checksum"], model_ver, settings.sample_fps,
+                                         settings.max_people)
                 if cache.is_file():
-                    seq = PoseSequence.load_npz(cache)
+                    multi = MultiPoseSequence.load_npz(cache)
                     progress(0.9, "Loaded cached pose landmarks")
                 else:
-                    seq, warnings = extract_pose(video, meta, estimator, settings.sample_fps, progress)
-                    seq.save_npz(cache)
+                    multi, warnings = extract_multi_pose(video, meta, estimator, settings.sample_fps, progress)
+                    multi.save_npz(cache)
             finally:
                 estimator.close()
-        result = analyze_pose(seq, settings.rules, session_id)
+            result, tracked, seq = analyze_multi_pose(multi, settings.rules, session_id, settings.tracking,
+                                                      settings.subject_track_id)
         warnings += result.warnings
         analysis_id = store.add_analysis(
             session_id, settings=settings.to_dict(), stats=result.stats, warnings=warnings,
             model_version=model_ver, data_mode=seq.data_mode, pose=seq)
+        if tracked is not None:
+            tracked.save_npz(tracks_path(store, session_id, analysis_id),
+                             result.stats["tracking"]["subject_track_id"])
+            # A previous overlay may label another subject; it is re-rendered on request.
+            old = store.path(session.get("overlay_relpath"))
+            if old is not None:
+                old.unlink(missing_ok=True)
+                store.update_session(session_id, overlay_relpath=None)
         counts = store.save_suggestions(session_id, analysis_id, result.events)
         store.update_session(session_id, status="review_ready")
         store.refresh_review_status(session_id)
@@ -224,19 +311,23 @@ def render_overlay(store: Store, session_id: str, max_height: int = 360,
     w, h = int(meta.width * scale) // 2 * 2, int(meta.height * scale) // 2 * 2
     out = store.session_dir(session_id) / "overlay.mp4"
     lookup = {int(fi): k for k, fi in enumerate(seq.frame_indices)}
+    tracks_file = tracks_path(store, session_id, analysis["analysis_id"])
+    tracks = TrackingResult.load_overlay_data(tracks_file) if tracks_file.is_file() else None
     with FrameWriter(out, w, h, seq.sample_fps) as writer:
         for frame_idx, t, frame in iter_sampled_frames(video, meta, seq.sample_fps):
             frame = cv2.resize(frame, (w, h))
             k = lookup.get(frame_idx)
-            if k is not None and seq.has_pose[k]:
-                lm = seq.landmarks[k]
-                vis = np.nan_to_num(lm[:, VISIBILITY]) >= visibility_threshold
-                pts = {i: (int(lm[i, X] * w), int(lm[i, Y] * h)) for i in range(NUM_LANDMARKS) if vis[i]}
-                for a, b in _BONES:
-                    if a in pts and b in pts:
-                        cv2.line(frame, pts[a], pts[b], (80, 230, 120), 2, cv2.LINE_AA)
-                for p in pts.values():
-                    cv2.circle(frame, p, 3, (40, 180, 255), -1, cv2.LINE_AA)
+            if tracks is not None and k is not None and tracks[0].counts[k] > 0:
+                multi, assignment, subject = tracks
+                # Other people first, so the subject's skeleton is drawn on top.
+                slots = sorted((j for j in range(multi.max_people) if assignment[k, j] > 0),
+                               key=lambda j: assignment[k, j] == subject)
+                for j in slots:
+                    tid = int(assignment[k, j])
+                    _draw_pose(frame, multi.poses[k, j], w, h, visibility_threshold, tid == subject,
+                               f"#{tid} subject" if tid == subject else f"#{tid}")
+            elif tracks is None and k is not None and seq.has_pose[k]:
+                _draw_pose(frame, seq.landmarks[k], w, h, visibility_threshold, True, None)
             else:
                 cv2.putText(frame, "no pose", (10, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.6,
                             (0, 0, 255), 2, cv2.LINE_AA)
@@ -245,6 +336,26 @@ def render_overlay(store: Store, session_id: str, max_height: int = 360,
             writer.write(frame)
     store.update_session(session_id, overlay_relpath=store.relpath(out))
     return out
+
+
+def _draw_pose(frame: np.ndarray, lm: np.ndarray, w: int, h: int, visibility_threshold: float,
+               subject: bool, label: str | None) -> None:
+    """Skeleton (green for the subject, grey for other tracked people) and a track-number label."""
+    vis = np.nan_to_num(lm[:, VISIBILITY]) >= visibility_threshold
+    pts = {i: (int(lm[i, X] * w), int(lm[i, Y] * h)) for i in range(NUM_LANDMARKS) if vis[i]}
+    bone, joint = ((80, 230, 120), (40, 180, 255)) if subject else ((170, 170, 170), (120, 120, 120))
+    for a, b in _BONES:
+        if a in pts and b in pts:
+            cv2.line(frame, pts[a], pts[b], bone, 2, cv2.LINE_AA)
+    for p in pts.values():
+        cv2.circle(frame, p, 3, joint, -1, cv2.LINE_AA)
+    if label:
+        finite = np.isfinite(lm[:, X]) & np.isfinite(lm[:, Y])
+        if finite.any():
+            x = int(np.clip(np.min(lm[finite, X]) * w, 2, w - 80))
+            y = int(np.clip(np.min(lm[finite, Y]) * h - 6, 14, h - 4))
+            cv2.putText(frame, label, (x, y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 3, cv2.LINE_AA)
+            cv2.putText(frame, label, (x, y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, bone, 1, cv2.LINE_AA)
 
 
 # ---------------------------------------------------------------- thumbnails (P1)
