@@ -55,6 +55,21 @@ Status key: ✅ implemented and verified · 🟡 implemented with a documented l
 | No emotion, intent, stereotypy, aggression or treatment features | ⛔ | not implemented by design |
 | User-directed local-video test procedure | ✅ | README, "Optional: test with your own staged clip" |
 
+## Production-readiness controls (beyond the PRD, 2026-10-20)
+
+| Control | Status | Implementation | Verification |
+|---|---|---|---|
+| Schema versioning, transactional migrations, backup before upgrade, refuse newer schema | ✅ | `storage.MIGRATIONS`, `Store._migrate` | `test_legacy_v1_database_is_migrated_without_data_loss`, `test_failed_migration_rolls_back`, `test_database_from_newer_release_is_refused` |
+| WAL, `synchronous=FULL`, foreign keys, `secure_delete`, serialized writes | ✅ | `Store._connect`, `Store._conn(write=True)` | `test_new_database_is_at_latest_schema_with_wal_and_foreign_keys`, `test_concurrent_duplicate_request_is_applied_once` |
+| Tamper-evident review history (append-only, hash chain, event cross-check, export anchor, UI banner) | ✅ | `storage._append_history`, `Store.verify_integrity`, `export.to_json_dict["audit"]`, app audit expander | `tests/test_storage_integrity.py`, `test_audit_trail_status_is_shown_and_flags_tampering` |
+| Structured logs without PHI, frames or paths | ✅ | `logging_setup.py` | `test_logs_are_json_and_contain_no_paths_or_filenames`, `test_failed_analysis_logs_exception_type_only` |
+| Resource limits: bounded upload copy, 4K frames, decode cap, ground-truth CSV caps | ✅ | `pipeline._copy_bounded`, `video_io`, `metrics` | `tests/test_robustness.py` |
+| Model supply chain: versioned URL, pinned SHA-256 (download and load) | ✅ | `config.MODEL_SHA256`, `pose.download_model`, `pose.verify_model` | `test_model_download_verifies_checksum`, `test_tampered_default_model_is_refused` |
+| CI: ruff, mypy strict, pytest with coverage floor (91 %), pip-audit, container smoke test | ✅ (container job runs only in CI) | `.github/workflows/ci.yml`, `pyproject.toml` | [`regulatory/verification_report.md`](regulatory/verification_report.md) |
+| Container: non-root, loopback publish, no checkip call | 🟡 not built locally | `Dockerfile`, `.dockerignore` | `test_dockerfile_keeps_privacy_and_least_privilege_settings`, CI `docker` job |
+
+Draft regulatory-readiness documents (not a submission) are in [`regulatory/`](regulatory/README.md).
+
 ## Section 11: acceptance tests
 
 | # | Acceptance test | Result |

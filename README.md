@@ -44,7 +44,23 @@ Run the tests:
 pytest -q
 ```
 
+Developer checks (the same ones CI runs in `.github/workflows/ci.yml`):
+
+```bash
+pip install -r requirements-dev.txt -c constraints.txt
+ruff check . && mypy && pytest -q --cov && pip-audit -r constraints.txt --no-deps --disable-pip
+```
+
 Without the model, everything except real-video inference still works: the synthetic demo, review, export, and most tests. The two real-inference tests also download MediaPipe's public sample photos of adults to a temporary directory. They are skipped when offline.
+
+### Docker
+
+```bash
+docker build -t behaviorlens .
+docker run --rm -p 127.0.0.1:8501:8501 -v behaviorlens-data:/data behaviorlens
+```
+
+Always publish to `127.0.0.1` as shown. Streamlit listens on `0.0.0.0` *inside* the container (Docker can only forward to the container's interface), so the host-side `127.0.0.1:` prefix is what keeps the app off your network. The image runs as a non-root user and downloads the pose model at build time, verified against a pinned SHA-256.
 
 ## Demo workflow (2 minutes)
 
@@ -137,6 +153,8 @@ Design notes:
 - **Re-running analysis** replaces only *unreviewed* suggestions, and only after the reviewer ticks a confirmation box. Confirmed, rejected, edited and manual events are kept. New suggestions that overlap an already-reviewed event of the same type are skipped rather than duplicated. Each run is stored as a new `analysis_id`.
 - **Pose results are cached** by content checksum, model version and sampling rate, so changing rule thresholds re-runs only the cheap rule stage.
 - **Idempotent review actions**: every UI action carries a request ID, and replays caused by Streamlit reruns are ignored.
+- **Data integrity**: the SQLite schema is versioned and upgraded by transactional migrations (the old database is backed up first; a database from a newer release is refused). WAL journaling and foreign keys are on. `review_history` is append-only and hash-chained per session; *Analysis details → Review history* runs `Store.verify_integrity`, which also flags events changed outside the audit trail. JSON exports include the chain head so it can be anchored elsewhere.
+- **Logging**: JSON lines on stderr (`BEHAVIORLENS_LOG_LEVEL`), event names plus IDs and counts only. Paths are redacted and tracebacks reduced to the exception type.
 - **Browser playback**: uploads that aren't already H.264 MP4 are transcoded locally to an H.264 preview with the bundled `imageio-ffmpeg` binary.
 
 ## Privacy and limitations
@@ -144,12 +162,17 @@ Design notes:
 - The server binds to `localhost`. To deliberately expose it on a trusted network, run `streamlit run app.py --server.address 0.0.0.0`. Uploaded videos and reviews then become reachable by anyone who can reach that address.
 - Processing is local. Streamlit usage statistics are disabled in `.streamlit/config.toml`. Logs never contain frames or identifying information.
 - Uploads and derived files live under the gitignored `data/sessions/<session_id>/`. **Delete session** removes the database rows, review history, stored video, landmarks and overlay, plus the pose cache unless another session uses the same video. Backups made outside the app are outside its control.
+- Data at rest is **not encrypted by the app**. Put `data/` (or the Docker volume) on an OS-encrypted disk (LUKS, FileVault, BitLocker) and restrict its permissions; see [`docs/regulatory/cybersecurity.md`](docs/regulatory/cybersecurity.md). A schema upgrade leaves a `behaviorlens.db.pre-vN-backup` copy in `data/`, which **Delete session** does not touch.
 - Exports never include video, file paths, source filenames (which may contain names) or images. They carry a "not clinically validated" warning and a `data_mode` (`synthetic` or `video_inference`).
 - Single primary person only. If several people are detected, the largest pose is used and a warning is shown, because attribution is unreliable.
 - 2D heuristics depend on camera angle. Side views, crouching, lunges and partial occlusion can produce *ambiguous* or *unobservable* frames, which by design yield no event.
 - Seek precision depends on the browser and video keyframes (typically within ~1 s). Previews are H.264, which Chrome, Edge, Safari and Firefox play. Some open-source Chromium builds lack H.264 decoding.
 - The synthetic demo exercises the rules and the UI. It **does not** validate real pose extraction.
 - MediaPipe model: `pose_landmarker_lite`, distributed by Google under the terms in its [model card](https://developers.google.com/edge/mediapipe/solutions/vision/pose_landmarker#models). It is downloaded, not committed.
+
+## Regulatory-readiness drafts
+
+[`docs/regulatory/`](docs/regulatory/README.md) holds **draft** engineering inputs (intended use, IEC 62304-style development plan, requirements, architecture, SOUP list, ISO 14971-style risk analysis, verification report, clinical validation *proposal*, cybersecurity). They are not a regulatory submission. BehaviorLens has no clearance, certification or clinical validation.
 
 ## Reference docs
 

@@ -7,7 +7,7 @@ import logging
 import os
 import urllib.request
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
 
 import cv2
 import numpy as np
@@ -35,16 +35,52 @@ class PoseEstimator(Protocol):
     def close(self) -> None: ...
 
 
-def download_model(dest: Path | None = None, url: str = config.MODEL_URL) -> Path:
-    """Download the pose model (network access to Google's model bucket only)."""
+class ModelIntegrityError(RuntimeError):
+    pass
+
+
+MAX_MODEL_BYTES = 64 * 1024 * 1024
+
+
+def download_model(dest: Path | None = None, url: str = config.MODEL_URL,
+                   expected_sha256: str | None = config.MODEL_SHA256) -> Path:
+    """Download the pose model (network access to Google's model bucket only).
+
+    The file is written to a temporary name and only moved into place once its
+    SHA-256 matches ``expected_sha256`` (pass None to skip, e.g. for other model sizes).
+    """
+    if not url.startswith("https://"):
+        raise ValueError("model URL must use https")
     dest = dest or config.model_path()
     dest.parent.mkdir(parents=True, exist_ok=True)
     tmp = dest.with_suffix(".part")
-    with urllib.request.urlopen(url, timeout=60) as resp, open(tmp, "wb") as f:
-        while block := resp.read(1 << 16):
-            f.write(block)
-    os.replace(tmp, dest)
+    h = hashlib.sha256()
+    try:
+        with urllib.request.urlopen(url, timeout=60) as resp, open(tmp, "wb") as f:
+            total = 0
+            while block := resp.read(1 << 16):
+                total += len(block)
+                if total > MAX_MODEL_BYTES:
+                    raise ModelIntegrityError("model download is larger than expected; aborted")
+                h.update(block)
+                f.write(block)
+        if expected_sha256 and h.hexdigest() != expected_sha256:
+            raise ModelIntegrityError(
+                f"downloaded model checksum {h.hexdigest()[:12]}… does not match the pinned "
+                f"{expected_sha256[:12]}…; the file was discarded. If Google published a new model, "
+                "it must be re-validated (docs/VALIDATION.md) before MODEL_SHA256 is updated.")
+        os.replace(tmp, dest)
+    finally:
+        tmp.unlink(missing_ok=True)
     return dest
+
+
+def verify_model(path: Path | None = None, expected_sha256: str | None = config.MODEL_SHA256) -> bool:
+    """True when the model file exists and matches the pinned checksum."""
+    path = path or config.model_path()
+    if not path.is_file():
+        return False
+    return expected_sha256 is None or hashlib.sha256(path.read_bytes()).hexdigest() == expected_sha256
 
 
 def model_version(path: Path) -> str:
@@ -71,6 +107,10 @@ class MediaPipePoseEstimator:
             raise PoseInferenceError(
                 f"MediaPipe could not be imported ({exc}). On Linux, install libegl1 and libgles2."
             ) from exc
+        if path.resolve() == config.default_model_path().resolve() and not verify_model(path):
+            raise ModelIntegrityError(
+                "The pose model file does not match the pinned checksum (it may be corrupted or replaced). "
+                "Run `python scripts/download_model.py --force`.")
         self._mp = mp
         self.model_version = model_version(path)
         options = vision.PoseLandmarkerOptions(
@@ -102,14 +142,14 @@ class MediaPipePoseEstimator:
     def close(self) -> None:
         self._landmarker.close()
 
-    def __enter__(self) -> "MediaPipePoseEstimator":
+    def __enter__(self) -> MediaPipePoseEstimator:
         return self
 
-    def __exit__(self, *exc) -> None:
+    def __exit__(self, *exc: object) -> None:
         self.close()
 
 
-def _to_array(landmarks) -> np.ndarray:
+def _to_array(landmarks: Any) -> np.ndarray:
     out = np.full((NUM_LANDMARKS, 5), np.nan)
     for i, lm in enumerate(landmarks[:NUM_LANDMARKS]):
         out[i] = (lm.x, lm.y, lm.z,

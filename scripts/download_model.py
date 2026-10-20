@@ -10,12 +10,14 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from behaviorlens import config  # noqa: E402
-from behaviorlens.pose import download_model, model_version  # noqa: E402
+from behaviorlens.pose import download_model, model_version, verify_model  # noqa: E402
 
 if __name__ == "__main__":
     dest = config.model_path()
     if dest.is_file() and "--force" not in sys.argv:
         print(f"Model already present: {dest} ({model_version(dest)})")
+        if not verify_model(dest):
+            sys.exit("ERROR: the model file does not match the pinned MODEL_SHA256; re-run with --force")
     else:
         print(f"Downloading {config.MODEL_URL}")
         download_model(dest)

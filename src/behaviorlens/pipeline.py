@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import logging
 import shutil
+import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, BinaryIO
@@ -89,6 +90,17 @@ def extract_pose(video_path: Path, meta: VideoMeta, estimator: PoseEstimator, sa
 
 
 # ---------------------------------------------------------------- sessions
+def _copy_bounded(src: BinaryIO, dst: BinaryIO, limit: int, chunk: int = 1 << 20) -> int:
+    """Copy at most ``limit`` bytes; raise as soon as the source turns out to be larger."""
+    total = 0
+    while block := src.read(chunk):
+        total += len(block)
+        if total > limit:
+            raise VideoValidationError("File exceeds the 100 MB upload limit.")
+        dst.write(block)
+    return total
+
+
 def create_upload_session(store: Store, filename: str, fileobj: BinaryIO, size_bytes: int) -> str:
     """Validate and store an uploaded video locally. Raises VideoValidationError."""
     head = fileobj.read(16)
@@ -98,11 +110,9 @@ def create_upload_session(store: Store, filename: str, fileobj: BinaryIO, size_b
     tmp_dir = store.root / "sessions" / "_incoming"
     tmp_dir.mkdir(parents=True, exist_ok=True)
     tmp = tmp_dir / f"{new_id()}{ext}"
-    with open(tmp, "wb") as f:
-        shutil.copyfileobj(fileobj, f, length=1 << 20)
     try:
-        if tmp.stat().st_size > config.MAX_UPLOAD_BYTES:
-            raise VideoValidationError("File exceeds the 100 MB upload limit.")
+        with open(tmp, "wb") as f:
+            size = _copy_bounded(fileobj, f, config.MAX_UPLOAD_BYTES)
         meta = probe_video(tmp)
         checksum = sha256_file(tmp)
         session_id = store.create_session(
@@ -114,8 +124,12 @@ def create_upload_session(store: Store, filename: str, fileobj: BinaryIO, size_b
         preview = make_browser_preview(video, sdir / "preview.mp4", meta)
         store.update_session(session_id, video_relpath=store.relpath(video),
                              preview_relpath=store.relpath(preview))
+        log.info("session_created", extra={"fields": {"session_id": session_id, "data_mode": "video_inference",
+                                                      "size_bytes": size, "duration_s": meta.duration_s,
+                                                      "fps": meta.fps, "codec": meta.codec}})
         return session_id
-    except Exception:
+    except Exception as exc:
+        log.warning("upload_rejected", extra={"fields": {"exc_type": type(exc).__name__}})
         tmp.unlink(missing_ok=True)
         if session_id:
             store.delete_session(session_id)
@@ -140,6 +154,7 @@ def create_demo_session(store: Store) -> str:
         fields = {"video_relpath": store.relpath(video), "preview_relpath": store.relpath(video)}
     if fields:
         store.update_session(session_id, **fields)
+    log.info("session_created", extra={"fields": {"session_id": session_id, "data_mode": "synthetic"}})
     return session_id
 
 
@@ -161,6 +176,9 @@ def run_analysis(store: Store, session_id: str, settings: AnalysisSettings | Non
     session = store.get_session(session_id)
     previous_status = session["status"]
     store.update_session(session_id, status="processing", error=None)
+    started = time.monotonic()
+    log.info("analysis_started", extra={"fields": {"session_id": session_id, "data_mode": session["data_mode"],
+                                                   "sample_fps": settings.sample_fps}})
     try:
         warnings: list[str] = []
         model_ver = None
@@ -197,11 +215,18 @@ def run_analysis(store: Store, session_id: str, settings: AnalysisSettings | Non
         counts = store.save_suggestions(session_id, analysis_id, result.events)
         store.update_session(session_id, status="review_ready")
         store.refresh_review_status(session_id)
+        log.info("analysis_completed", extra={"fields": {
+            "session_id": session_id, "analysis_id": analysis_id, "model_version": model_ver,
+            "algorithm_version": config.ALGORITHM_VERSION, "frames": len(seq),
+            "event_counts": result.stats.get("event_counts"), "warnings": len(warnings),
+            "elapsed_s": round(time.monotonic() - started, 2), **counts}})
         progress(1.0, "Analysis complete")
         return {"analysis_id": analysis_id, "warnings": warnings, "stats": result.stats, **counts}
     except Exception as exc:
         status = "failed" if previous_status in ("ready", "processing", "failed") else previous_status
         store.update_session(session_id, status=status, error=str(exc))
+        log.warning("analysis_failed", extra={"fields": {"session_id": session_id, "exc_type": type(exc).__name__,
+                                                         "elapsed_s": round(time.monotonic() - started, 2)}})
         raise
 
 
@@ -219,16 +244,19 @@ def render_overlay(store: Store, session_id: str, max_height: int = 360,
         raise ValueError("Overlay is only available for analyzed uploaded videos.")
     seq = store.load_landmarks(analysis)
     video = store.path(session["video_relpath"])
+    if seq is None or video is None or not video.is_file():
+        raise ValueError("The landmarks or source video for this session are missing. Re-run analysis.")
     meta = probe_video(video)
     scale = min(1.0, max_height / meta.height)
     w, h = int(meta.width * scale) // 2 * 2, int(meta.height * scale) // 2 * 2
     out = store.session_dir(session_id) / "overlay.mp4"
     lookup = {int(fi): k for k, fi in enumerate(seq.frame_indices)}
+    has_pose = seq.has_pose
     with FrameWriter(out, w, h, seq.sample_fps) as writer:
         for frame_idx, t, frame in iter_sampled_frames(video, meta, seq.sample_fps):
             frame = cv2.resize(frame, (w, h))
             k = lookup.get(frame_idx)
-            if k is not None and seq.has_pose[k]:
+            if k is not None and has_pose[k]:
                 lm = seq.landmarks[k]
                 vis = np.nan_to_num(lm[:, VISIBILITY]) >= visibility_threshold
                 pts = {i: (int(lm[i, X] * w), int(lm[i, Y] * h)) for i in range(NUM_LANDMARKS) if vis[i]}

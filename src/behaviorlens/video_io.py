@@ -116,6 +116,11 @@ def probe_video(path: Path) -> VideoMeta:
         )
     if width <= 0 or height <= 0:
         height, width = frame.shape[:2]
+    if width * height > config.MAX_FRAME_PIXELS or frame.shape[0] * frame.shape[1] > config.MAX_FRAME_PIXELS:
+        raise VideoValidationError(
+            f"The video resolution ({width}x{height}) is above the supported maximum (4K, 3840x2160). "
+            "Downscale it, e.g. `ffmpeg -i in.mp4 -vf scale=-2:1080 out.mp4`."
+        )
     return VideoMeta(fps=fps, frame_count=frames, width=width, height=height,
                      duration_s=round(duration, 3), codec=codec)
 
@@ -141,6 +146,7 @@ def iter_sampled_frames(path: Path, meta: VideoMeta, target_fps: float,
     seeking is imprecise. A truncated/corrupted tail stops iteration with a warning.
     """
     wanted = sample_frame_indices(meta, target_fps)
+    wanted = wanted[wanted < config.MAX_DECODED_FRAMES]
     cap = cv2.VideoCapture(str(path))
     if not cap.isOpened():
         raise VideoValidationError("The video could not be opened for decoding.")
@@ -153,6 +159,9 @@ def iter_sampled_frames(path: Path, meta: VideoMeta, target_fps: float,
                 pos += 1
             ok, frame = cap.read() if pos == target else (False, None)
             pos += 1
+            if ok and frame is not None and frame.shape[0] * frame.shape[1] > config.MAX_FRAME_PIXELS:
+                # Streams can change resolution mid-file; never hold an oversized frame.
+                raise VideoValidationError("A frame in this video exceeds the 4K resolution limit.")
             if not ok or frame is None:
                 if warnings is not None:
                     warnings.append(
@@ -169,7 +178,7 @@ def ffmpeg_exe() -> str | None:
     try:
         import imageio_ffmpeg
 
-        return imageio_ffmpeg.get_ffmpeg_exe()
+        return str(imageio_ffmpeg.get_ffmpeg_exe())
     except Exception:  # pragma: no cover - depends on environment
         return None
 
@@ -211,26 +220,43 @@ class FrameWriter:
             raise RuntimeError("ffmpeg is unavailable; install imageio-ffmpeg")
         path.parent.mkdir(parents=True, exist_ok=True)
         self.size = (width, height)
+        self.path = path
         self.proc = subprocess.Popen(
             [exe, "-y", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "bgr24",
              "-s", f"{width}x{height}", "-r", f"{fps:g}", "-i", "-",
              "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p",
              "-movflags", "+faststart", str(path)],
             stdin=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
         )
+        assert self.proc.stdin is not None
+        self._stdin = self.proc.stdin
 
     def write(self, frame: np.ndarray) -> None:
         if (frame.shape[1], frame.shape[0]) != self.size:
             frame = cv2.resize(frame, self.size)
-        self.proc.stdin.write(np.ascontiguousarray(frame, dtype=np.uint8).tobytes())
+        self._stdin.write(np.ascontiguousarray(frame, dtype=np.uint8).tobytes())
 
     def close(self) -> None:
-        self.proc.stdin.close()
+        self._stdin.close()
         if self.proc.wait(timeout=600) != 0:
             raise RuntimeError("ffmpeg failed to encode video")
 
-    def __enter__(self) -> "FrameWriter":
+    def abort(self) -> None:
+        """Stop ffmpeg and remove the partial output (used when rendering fails midway)."""
+        try:
+            self._stdin.close()
+        except OSError:
+            pass
+        self.proc.kill()
+        self.proc.wait(timeout=30)
+        self.path.unlink(missing_ok=True)
+
+    def __enter__(self) -> FrameWriter:
         return self
 
-    def __exit__(self, *exc) -> None:
-        self.close()
+    def __exit__(self, exc_type: type[BaseException] | None, *_: object) -> None:
+        if exc_type is not None:
+            self.abort()
+        else:
+            self.close()

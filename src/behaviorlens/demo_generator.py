@@ -24,6 +24,7 @@ Scripted timeline (40 s):
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from pathlib import Path
 
 import cv2
@@ -63,7 +64,7 @@ GROUND_TRUTH = [
 ]
 
 
-def _interp(kp: list[tuple[float, float]], t: float) -> float:
+def _interp(kp: Sequence[tuple[float, float]], t: float) -> float:
     xs, ys = zip(*kp)
     return float(np.interp(t, xs, ys))
 
@@ -77,7 +78,9 @@ def _keypoints(stand: float, left_up: float, right_up: float) -> dict[int, tuple
 
     MediaPipe's "left" is the person's left, which appears on the image right.
     """
-    lerp = lambda a, b: a + (b - a) * stand  # noqa: E731
+    def lerp(a: float, b: float) -> float:
+        return a + (b - a) * stand
+
     sh_y = lerp(0.38, 0.28)
     hip_y = lerp(0.62, 0.52)
     pts: dict[int, tuple[float, float]] = {0: (0.5, sh_y - 0.10)}

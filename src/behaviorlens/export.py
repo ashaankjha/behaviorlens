@@ -59,6 +59,8 @@ def to_csv(store: Store, session_id: str, statuses: list[str] | None = None) -> 
 def to_json_dict(store: Store, session_id: str, statuses: list[str] | None = None) -> dict[str, Any]:
     s = store.get_session(session_id)
     analysis = store.latest_analysis(session_id)
+    history_rows, chain_head = store.review_chain_head(session_id)
+    problems = store.verify_integrity(session_id)
     events = []
     for e in store.list_events(session_id, statuses):
         d = e.model_dump()
@@ -96,6 +98,13 @@ def to_json_dict(store: Store, session_id: str, statuses: list[str] | None = Non
         },
         "status_filter": statuses or "all",
         "events": events,
+        # Anchor for the tamper-evident review history: keep this export, and a later chain
+        # that no longer contains this head (or has fewer rows) reveals removed audit records.
+        "audit": {
+            "review_history_rows": history_rows,
+            "review_history_chain_head_sha256": chain_head,
+            "integrity_problems": len(problems),
+        },
     }
 
 

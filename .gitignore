@@ -13,3 +13,10 @@ assets/models/*.task
 assets/models/*.part
 
 .DS_Store
+
+# Tool caches and reports
+.coverage
+coverage.xml
+htmlcov/
+.mypy_cache/
+.ruff_cache/

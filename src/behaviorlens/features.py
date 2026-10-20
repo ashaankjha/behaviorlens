@@ -45,7 +45,8 @@ def _visible(seq: PoseSequence, idx: int, thr: float) -> np.ndarray:
     lo, hi = -IN_FRAME_TOLERANCE, 1 + IN_FRAME_TOLERANCE
     with np.errstate(invalid="ignore"):
         inside = (x >= lo) & (x <= hi) & (y >= lo) & (y <= hi)
-    return vis & inside
+    out: np.ndarray = vis & inside
+    return out
 
 
 def _xy(seq: PoseSequence, idx: int) -> np.ndarray:
@@ -58,7 +59,8 @@ def _angle_deg(a: np.ndarray, b: np.ndarray, c: np.ndarray) -> np.ndarray:
     denom = np.linalg.norm(ba, axis=1) * np.linalg.norm(bc, axis=1)
     with np.errstate(invalid="ignore", divide="ignore"):
         cos = np.sum(ba * bc, axis=1) / denom
-    return np.degrees(np.arccos(np.clip(cos, -1.0, 1.0)))
+    deg: np.ndarray = np.degrees(np.arccos(np.clip(cos, -1.0, 1.0)))
+    return deg
 
 
 @dataclass

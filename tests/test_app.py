@@ -73,3 +73,19 @@ def test_ground_truth_metrics_only_when_ground_truth_exists(app, store):
     assert not app.exception
     assert any("No ground truth supplied" in c.value for c in app.caption)
     assert not any("Algorithm proposals" in m.value for m in app.markdown)
+
+
+def test_audit_trail_status_is_shown_and_flags_tampering(app, store):
+    """The review-history panel reports the hash-chain check, and a failure when data was edited directly."""
+    import sqlite3
+
+    app.button[0].click().run()
+    next(b for b in app.button if b.label == "Next pending").click().run()
+    next(b for b in app.button if b.label == "✓ Confirm").click().run()
+    assert any("Audit trail verified: 1 hash-chained record" in c.value for c in app.caption)
+
+    with sqlite3.connect(store.db_path) as con:
+        con.execute("UPDATE events SET review_status = 'rejected' WHERE review_status = 'confirmed'")
+    app.run()
+    assert not app.exception
+    assert any("integrity check FAILED" in e.value for e in app.error)

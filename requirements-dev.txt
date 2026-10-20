@@ -1,4 +1,7 @@
 # Runtime requirements plus the tools CLAUDE.md commands and project skills use.
 -r requirements.txt
 ruff>=0.6
+mypy>=1.13          # static typing (config in pyproject.toml)
+pytest-cov>=5       # coverage floor enforced in CI
+pip-audit>=2.7      # dependency vulnerability scan (CI)
 playwright>=1.45   # e2e-verify-streamlit skill (uses the preinstalled Chromium; no `playwright install`)

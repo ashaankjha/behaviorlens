@@ -23,3 +23,25 @@ line-length = 120
 [tool.ruff.lint]
 select = ["E", "F", "W", "B"]
 ignore = ["E731", "B905"]
+
+[tool.mypy]
+python_version = "3.11"
+files = ["src/behaviorlens"]
+strict = true
+warn_unreachable = true
+plugins = ["pydantic.mypy"]
+
+[[tool.mypy.overrides]]
+# Untyped third-party packages (no stubs published).
+module = ["mediapipe", "mediapipe.*", "imageio_ffmpeg"]
+ignore_missing_imports = true
+
+[tool.coverage.run]
+source = ["src/behaviorlens"]
+branch = true
+
+[tool.coverage.report]
+# Floor = measured coverage on 2026-10-20, rounded down (docs/regulatory/verification_report.md).
+fail_under = 91
+show_missing = true
+skip_covered = true
