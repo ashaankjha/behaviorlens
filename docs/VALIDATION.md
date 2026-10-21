@@ -551,6 +551,23 @@ Holdout under Amendment 1: Charades 10, UTKinect 13, PKU-MMD P1 18 and P2 57 sta
 
 **Track merging fails the H-03 check (adoption condition 4).** Merging is not part of S, but it was in the grid and is the M44 lever, so it was reviewed. On the holdout (post-hoc) it recovers exactly the motivating miss, UTKinect s03_e01 (10 → 11 of 13), and changes nothing else. On Charades (all 126 videos) it joins tracks in 51 videos and adds one stand-up false positive (6HR54, 13.8–14.8 s) and 6 hand detections in 5 videos. **Frame review of 6HR54: the merged subject stitches two people.** A seated woman and a standing girl at a table are each detected only intermittently (usually one of the two per frame), and the frame-to-frame tracker already alternates each track between them (T4 and T5 both switch person, 11–18 s). Merging then joins T4 and T5 into the subject track, and the seated frames of one person plus the standing frames of the other produce a stand-up nobody performed: exactly the K5CRM hazard. The root cause is in rules-v0.3 tracking itself (identity alternation when MediaPipe returns one of two nearby people per frame); merging amplifies it by making such a track the subject. **Do not enable `merge_fragments` on multi-person or handheld footage.** A merge restricted to clips that never show two people at once would still be blind to this case, because here the two people are rarely detected in the same frame.
 
+### Phase 3 verdict: confirmation deferred (n = 131 < 150)
+
+The Google Drive quota held for more than 13 hours (LEARNINGS M48, M56), so only **131 of the 206 fresh videos** were fetched, below the pre-registered minimum of 150. As pre-registered (Amendment 1), **the fresh set was not scored, and there is no adoption recommendation.** Landmark caches exist for the 131 videos; no rule has been run on them and no frame or result from them has been viewed, so `pkummd1_fresh` remains a never-seen confirmation set.
+
+What stands: S (`seated_max_drop = 0.45`, all else rules-v0.3) was selected on the tune split, and its held-out gain (F1 0.588 → 0.709) is the best evidence so far for a frontal-posture change. That holdout has been used three times, though, so confirmation on the fresh set is still required before adoption. Track merging (`merge_fragments`) is **not recommended** on any outcome: it fails the H-03 review (6HR54). `config.py` defaults and `ALGORITHM_VERSION` are unchanged.
+
+To finish later, when the quota allows (it is per file; retry hourly, M48):
+
+```bash
+python scripts/fetch_fixed_camera_datasets.py pkummd1_fresh --limit 85 --stride 4 --workers 2   # repeat until 206 (>= 150 required)
+python scripts/validate_real_video.py --split all --dataset pkummd1_fresh --json fresh_C.json                                   # C, extracts caches
+python scripts/validate_real_video.py --split all --dataset pkummd1_fresh --params '{"seated_max_drop": 0.45}' --json fresh_S.json   # S
+python scripts/validate_real_video.py --split all --dataset pkummd1_fresh --attribution legacy --json fresh_A.json                # A (context)
+```
+
+Score each **once**, then apply the adoption rule above: (1) fresh F1(S) − F1(C) ≥ +0.01, (2) holdout not worse than −0.02 (already met: +0.121), (3) `hand_raised` label F1 within 0.02 (holdout already met: equal), and (4) H-03, which does not apply because S does not merge.
+
 ### H-03 audit of rules-v0.3 tracking (shipped defaults, merge off)
 
 Prompted by 6HR54 (above): if the tracker alternates a track between two intermittently detected people, the **shipped** subject track can carry evidence from two people even without merging. This is a bounded audit, not a selection; no default changed.
