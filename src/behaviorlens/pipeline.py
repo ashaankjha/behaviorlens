@@ -69,6 +69,15 @@ def analyze_pose(seq: PoseSequence, params: RuleParams, session_id: str,
                 f"track #{tracking['subject_track_id']} only ({tracking['subject_coverage']:.0%} of frames, "
                 f"chosen {how}). Track numbers come from position continuity between frames, not recognition: "
                 "check the pose overlay and choose another subject under Analysis controls if needed.")
+        guard = tracking.get("identity_jump_guard")
+        if guard and (guard["subject_masked_frames"] or guard["tracks_split"]):
+            what = (f"{guard['subject_masked_frames']} frames after {guard['subject_jumps']} such jumps "
+                    "of the subject are treated as unobservable" if guard["mode"] == "mask"
+                    else f"tracks were split at {guard['tracks_split']} such jumps before choosing the subject")
+            warnings.append(
+                f"Identity-jump guard: a track's head, shoulders and hips moved by at least "
+                f"{guard['threshold']:g} body sizes between consecutive frames, which usually means another "
+                f"person or a false pose took over the track; {what}.")
     elif stats["multi_person_frame_ratio"] > 0:
         warnings.append(
             f"More than one person was detected in {stats['multi_person_frame_ratio']:.0%} of frames. "

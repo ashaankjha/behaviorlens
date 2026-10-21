@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 
 from behaviorlens import config, export, metrics, pipeline
-from behaviorlens.config import AnalysisSettings
+from behaviorlens.config import AnalysisSettings, TrackingParams
 from behaviorlens.demo_generator import GROUND_TRUTH, generate_pose_sequence
 from behaviorlens.pose import MediaPipePoseEstimator, ModelNotFoundError
 from behaviorlens.video_io import (
@@ -388,3 +388,29 @@ def test_validation_params_reject_typos():
     assert v.parse_tracking('{"max_gap_s": 1.0}').max_gap_s == 1.0
     with pytest.raises(SystemExit, match="unknown --tracking-params keys: max_gap"):
         v.parse_tracking('{"max_gap": 1.0}')
+
+
+def test_identity_jump_guard_runs_on_the_production_tracking_path(store, tmp_path):
+    """run_analysis -> extract_multi_pose -> tracking -> subject track -> rules (LEARNINGS M38):
+    two nearby people detected one per frame produce a stitched stand-up with the shipped
+    defaults and none with either guard, which is reported in stats and warnings."""
+    def alternating(t):
+        a, b = person(0.40, 0.6, stand=0.0), person(0.63, 0.6, stand=1.0)
+        return [a] if t < 2.0 or (t - 2.0) % 1.6 >= 1.0 else [b]
+
+    multi = make_multi(8, people=alternating)
+    sid = upload(store, write_video(tmp_path / "alt.mp4", 8.0))
+    run = lambda tracking: pipeline.run_analysis(
+        store, sid, AnalysisSettings(sample_fps=5, tracking=tracking),
+        estimator_factory=lambda: FakeMultiEstimator(multi))
+    stand_ups = lambda: [e for e in store.list_events(sid) if e.event_type == "standing_transition"]
+
+    res = run(TrackingParams())
+    assert "identity_jump_guard" not in res["stats"]["tracking"] and stand_ups()
+    for mode in ("mask", "split"):
+        res = run(TrackingParams(identity_jump_guard=mode))
+        guard = res["stats"]["tracking"]["identity_jump_guard"]
+        assert guard["mode"] == mode and (guard["subject_masked_frames"] or guard["tracks_split"])
+        assert any("Identity-jump guard" in w for w in res["warnings"])
+        assert stand_ups() == []
+        assert store.latest_analysis(sid)["settings"]["tracking"]["identity_jump_guard"] == mode

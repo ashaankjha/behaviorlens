@@ -23,7 +23,20 @@ import numpy as np
 from numpy.typing import ArrayLike
 
 from .config import TrackingParams
-from .models import NUM_LANDMARKS, VISIBILITY, X, Y, DataMode, Event, PoseSequence
+from .models import (
+    LEFT_HIP,
+    LEFT_SHOULDER,
+    NOSE,
+    NUM_LANDMARKS,
+    RIGHT_HIP,
+    RIGHT_SHOULDER,
+    VISIBILITY,
+    X,
+    Y,
+    DataMode,
+    Event,
+    PoseSequence,
+)
 from .pose import select_primary
 
 # Exhaustive assignment is exact and cheap for the few people MediaPipe returns per frame.
@@ -37,6 +50,10 @@ _MIN_AREA = 1e-4
 _MAX_TRACKS_IN_STATS = 10
 # Frames at each end of a track whose median box describes it for fragment merging.
 _JUNCTION_FRAMES = 3
+# Landmarks whose frame-to-frame displacement measures an identity jump: the body core, not the
+# arms or legs, so a fast arm raise or a leg flickering out of view does not count as a jump.
+_JUMP_LANDMARKS = [NOSE, LEFT_SHOULDER, RIGHT_SHOULDER, LEFT_HIP, RIGHT_HIP]
+_JUMP_MIN_LANDMARKS = 3
 
 
 # ---------------------------------------------------------------- multi-person landmarks
@@ -281,6 +298,7 @@ class TrackingResult:
     params: TrackingParams
     duplicates_dropped: int = 0
     fragments_merged: int = 0
+    identity_splits: int = 0
 
     @property
     def track_ids(self) -> list[int]:
@@ -303,9 +321,29 @@ class TrackingResult:
     def track_sequence(self, track_id: int | None) -> PoseSequence:
         """PoseSequence of one track; frames where it is absent are NaN (unobservable).
 
-        ``num_people`` keeps the number of tracked people per frame.
+        With ``identity_jump_guard = "mask"``, frames inside an identity-jump window
+        (``jump_masked_frames``) are NaN as well. ``num_people`` keeps the number of tracked
+        people per frame.
         """
-        return self.multi._sequence(self.track_landmarks(track_id), self.people_per_frame())
+        landmarks = self.track_landmarks(track_id)
+        landmarks[self.jump_masked_frames(track_id)] = np.nan
+        return self.multi._sequence(landmarks, self.people_per_frame())
+
+    def identity_jump_frames(self, track_id: int | None) -> np.ndarray:
+        """Frames where the track's body core jumped by at least ``identity_jump_threshold``."""
+        jumps = identity_jumps(self.track_landmarks(track_id))
+        return np.asarray(np.nan_to_num(jumps, nan=0.0) >= self.params.identity_jump_threshold)
+
+    def jump_masked_frames(self, track_id: int | None) -> np.ndarray:
+        """Frames made unobservable by the "mask" guard: from each identity jump of the track,
+        for ``identity_jump_mask_s``. All False unless the guard is "mask"."""
+        ts = self.multi.timestamps_s
+        masked = np.zeros(len(ts), dtype=bool)
+        if self.params.identity_jump_guard != "mask" or track_id is None:
+            return masked
+        for k in np.flatnonzero(self.identity_jump_frames(track_id)):
+            masked |= (ts >= ts[k] - 1e-9) & (ts < ts[k] + self.params.identity_jump_mask_s - 1e-9)
+        return masked
 
     def summaries(self) -> list[TrackSummary]:
         n = max(len(self.multi), 1)
@@ -358,9 +396,23 @@ class TrackingResult:
             "subject_is_largest_ratio": round(float(np.mean(seen == subject_id)), 3) if seen.size else 0.0,
             "duplicate_detections_dropped": self.duplicates_dropped,
             "fragments_merged": self.fragments_merged,
+            **self._guard_stats(subject_id),
             "per_track": [s.to_dict() for s in sorted(top, key=lambda s: s.track_id)],
             "params": self.params.to_dict(),
         }
+
+    def _guard_stats(self, subject_id: int | None) -> dict[str, Any]:
+        """Identity-jump guard statistics; empty when the guard is off (rules-v0.3 output unchanged)."""
+        p = self.params
+        if p.identity_jump_guard == "off":
+            return {}
+        return {"identity_jump_guard": {
+            "mode": p.identity_jump_guard, "threshold": p.identity_jump_threshold,
+            "mask_s": p.identity_jump_mask_s if p.identity_jump_guard == "mask" else None,
+            "tracks_split": self.identity_splits,
+            "subject_jumps": int(self.identity_jump_frames(subject_id).sum()) if subject_id is not None else 0,
+            "subject_masked_frames": int(self.jump_masked_frames(subject_id).sum()),
+        }}
 
     def save_npz(self, path: str | Path, subject_id: int | None) -> None:
         np.savez_compressed(path, timestamps_s=self.multi.timestamps_s, frame_indices=self.multi.frame_indices,
@@ -414,7 +466,64 @@ def track_people(multi: MultiPoseSequence, params: TrackingParams | None = None)
             assignment[k, slot] = track.track_id
             boxes[k, slot] = box
     result = TrackingResult(multi=multi, assignment=assignment, boxes=boxes, params=p, duplicates_dropped=dropped)
-    return merge_fragments(result) if p.merge_fragments else result
+    if p.merge_fragments:
+        result = merge_fragments(result)
+    return split_at_identity_jumps(result) if p.identity_jump_guard == "split" else result
+
+
+def identity_jumps(landmarks: np.ndarray) -> np.ndarray:
+    """Per frame of one track's (N, 33, 5) landmarks: how far its body core moved since the
+    previous frame in which the track was present, in units of the track's size there.
+
+    The displacement is the median over nose, shoulders and hips (landmark positions, as for
+    tracking; at least 3 must be finite in both frames), and the size is the square root of the
+    earlier frame's all-landmark box area. NaN for frames without the track or without an
+    earlier frame. A value near 1 means the core moved by a whole body size in one sampled
+    frame: usually a different person (or a phantom pose) took over the track (H-03).
+    """
+    out = np.full(len(landmarks), np.nan)
+    prev: int | None = None
+    for k in range(len(landmarks)):
+        box = landmark_bbox(landmarks[k])
+        if box is None:
+            continue
+        if prev is not None:
+            a = landmarks[prev, _JUMP_LANDMARKS][:, [X, Y]]
+            b = landmarks[k, _JUMP_LANDMARKS][:, [X, Y]]
+            d = np.hypot(*(b - a).T)
+            d = d[np.isfinite(d)]
+            prev_box = landmark_bbox(landmarks[prev])
+            if len(d) >= _JUMP_MIN_LANDMARKS and prev_box is not None:
+                out[k] = float(np.median(d)) / math.sqrt(_area(prev_box))
+        prev = k
+    return out
+
+
+def split_at_identity_jumps(result: TrackingResult) -> TrackingResult:
+    """Cut every track at each identity jump (``identity_jump_threshold``) into separate tracks,
+    then renumber IDs in order of appearance. Never joins anything, so frames are only ever moved
+    to a new track ID; the subject is then chosen among the pieces as usual, and frames of the
+    other pieces are unobservable for it."""
+    a = result.assignment
+    out = np.zeros_like(a)
+    pieces = 0
+    next_id = 1
+    for tid in result.track_ids:
+        jumps = result.identity_jump_frames(tid)
+        cur = next_id
+        next_id += 1
+        for k in np.flatnonzero(result.present(tid)):
+            if jumps[k]:
+                cur = next_id
+                next_id += 1
+                pieces += 1
+            out[k][a[k] == tid] = cur
+    first = {int(t): int(np.flatnonzero(np.any(out == t, axis=1))[0]) for t in np.unique(out) if t > 0}
+    new_id = {t: n for n, t in enumerate(sorted(first, key=lambda t: (first[t], t)), 1)}
+    renumbered = np.vectorize(lambda t: new_id.get(int(t), 0), otypes=[int])(out) if out.size else out
+    return TrackingResult(multi=result.multi, assignment=renumbered, boxes=result.boxes, params=result.params,
+                          duplicates_dropped=result.duplicates_dropped,
+                          fragments_merged=result.fragments_merged, identity_splits=pieces)
 
 
 def _junction_box(boxes: np.ndarray, frames: np.ndarray) -> np.ndarray:

@@ -8,7 +8,7 @@ from behaviorlens.event_rules import detect_all
 from behaviorlens.models import X
 from behaviorlens.pipeline import analyze_multi_pose
 from behaviorlens.pose import select_primary
-from behaviorlens.tracking import MultiPoseSequence, assign, landmark_bbox, track_people
+from behaviorlens.tracking import MultiPoseSequence, assign, identity_jumps, landmark_bbox, track_people
 
 from conftest import make_multi, make_seq, person
 
@@ -311,3 +311,112 @@ def test_handover_to_a_different_person_after_a_gap_is_not_stitched_into_a_stand
     result, tracked, _ = analyze_multi_pose(multi, P, "s", MERGE)
     assert tracked.fragments_merged == 0
     assert not any(e.event_type == "standing_transition" for e in result.events)
+
+
+# ------------------------------------------------------------ identity-jump guard (opt-in, H-03 / G-12)
+MASK = TrackingParams(identity_jump_guard="mask")
+SPLIT = TrackingParams(identity_jump_guard="split")
+
+
+def test_identity_jump_guard_is_off_by_default_and_rejects_unknown_modes():
+    assert TrackingParams().identity_jump_guard == "off"
+    assert "identity_jump_guard" not in track_people(make_multi(2, people=lambda t: [person()])).stats(1, "auto")
+    with pytest.raises(ValueError, match="identity_jump_guard"):
+        TrackingParams(identity_jump_guard="on")
+
+
+def alternating_people(t):
+    """A seated person and a standing person side by side; MediaPipe returns only one of them per
+    frame (the 6HR54 / HOI88 mechanism, LEARNINGS M49): A alone until 2 s, then B for 1 s and A
+    for 0.6 s in turn. The tracker joins them into one track."""
+    a, b = person(0.40, 0.6, stand=0.0), person(0.63, 0.6, stand=1.0)
+    return [a] if t < 2.0 or (t - 2.0) % 1.6 >= 1.0 else [b]
+
+
+def hand_handover(t):
+    """A raises a hand for 0.4 s, then B (whose hand is up) is detected instead for 1 s: each
+    raise alone is shorter than hand_raise_min_s, but stitched together they last 0.8 s."""
+    if 2.4 <= t < 3.4:
+        return [person(0.63, 0.6, stand=1.0, right_up=1.0 if t < 2.8 else 0.0)]
+    return [person(0.40, 0.6, stand=0.0, right_up=1.0 if 2.0 <= t < 2.4 else 0.0)]
+
+
+@pytest.mark.parametrize("scene", [alternating_people, hand_handover])
+def test_people_alternating_at_nearby_positions_yield_no_event_stitched_across_them(scene):
+    multi = make_multi(10, people=scene)
+    # Without the guard the tracker alternates one track between the two people, and the rules
+    # see seated evidence from one person and standing (or hand) evidence from the other.
+    off, tracked, _ = analyze_multi_pose(multi, P, "s")
+    jumps = identity_jumps(tracked.track_landmarks(tracked.auto_subject()))
+    assert np.nanmax(jumps) > 1.0
+    stitched = {e.event_type for e in off.events} & {"standing_transition", "hand_raised"}
+    assert stitched
+    for guard in (MASK, SPLIT):
+        result, _, _ = analyze_multi_pose(multi, P, "s", guard)
+        assert not {e.event_type for e in result.events} & stitched
+        assert any("Identity-jump guard" in w for w in result.warnings)
+
+
+def test_mask_guard_makes_frames_after_a_jump_unobservable_and_split_cuts_the_track():
+    multi = make_multi(6, people=hand_handover)
+    masked = track_people(multi, MASK)
+    assert masked.track_ids == [1]  # the mask never changes track membership
+    jump_frames = np.flatnonzero(masked.identity_jump_frames(1))
+    assert list(multi.timestamps_s[jump_frames]) == [2.4, 3.4]  # A -> B and B -> A
+    seq = masked.track_sequence(1)
+    gone = ~np.isfinite(seq.landmarks[:, 0, X])
+    assert list(np.flatnonzero(gone)) == list(range(12, 22))  # 2.4 s up to 3.4 s + 1 s
+    stats = masked.stats(1, "auto")["identity_jump_guard"]
+    assert stats == {"mode": "mask", "threshold": 1.0, "mask_s": 1.0, "tracks_split": 0,
+                     "subject_jumps": 2, "subject_masked_frames": 10}
+
+    split = track_people(multi, SPLIT)
+    assert split.identity_splits == 2 and len(split.track_ids) == 3
+    assert np.array_equal(split.people_per_frame(), multi.counts)  # frames are moved, never dropped
+    b = split.assignment[12, 0]
+    assert np.flatnonzero(split.present(b)).tolist() == list(range(12, 17))  # B alone in its own track
+    assert split.stats(split.auto_subject(), "auto")["identity_jump_guard"]["tracks_split"] == 2
+
+
+def test_a_single_switch_outlasting_the_mask_window_is_still_stitched_but_split_is_not():
+    """The mask is a window, not a cut: if the second person stays in view longer than
+    identity_jump_mask_s after a single switch, seated evidence before the switch and standing
+    evidence after the window still form a transition. Splitting the track prevents that."""
+    people = lambda t: [person(0.40, 0.6, stand=0.0)] if t < 3.0 else [person(0.63, 0.6, stand=1.0)]
+    multi = make_multi(8, people=people)
+    stand_ups = lambda tp: [e for e in analyze_multi_pose(multi, P, "s", tp)[0].events
+                            if e.event_type == "standing_transition"]
+    assert stand_ups(TrackingParams()) and stand_ups(MASK)
+    assert not stand_ups(SPLIT)
+    assert stand_ups(TrackingParams(identity_jump_guard="mask", identity_jump_mask_s=6.0)) == []
+
+
+@pytest.mark.parametrize("guard", [MASK, SPLIT, TrackingParams(identity_jump_guard="split",
+                                                                identity_jump_threshold=0.8)])
+@pytest.mark.parametrize("rise_s", [0.2, 0.4])
+def test_one_person_moving_fast_keeps_their_events_below_the_threshold(guard, rise_s):
+    """A stand-up within one or two sampled frames and a quick arm raise move the body core by
+    well under one body size per frame, so no jump is flagged and the events stay."""
+    def people(t):
+        stand = min(max((t - 3.0) / rise_s, 0.0), 1.0)
+        return [person(0.40 + 0.02 * stand, 0.6, stand=stand, right_up=1.0 if 5.0 <= t < 5.8 else 0.0)]
+
+    multi = make_multi(8, people=people)
+    off, tracked, _ = analyze_multi_pose(multi, P, "s")
+    assert np.nanmax(identity_jumps(tracked.track_landmarks(1))) < 0.5
+    on, guarded, _ = analyze_multi_pose(multi, P, "s", guard)
+    types = lambda r: [(e.event_type, e.start_s, e.end_s) for e in r.events]
+    assert {"standing_transition", "hand_raised"} <= {e.event_type for e in on.events}
+    assert types(on) == types(off)
+    assert guarded.track_ids == [1]
+    assert not any("Identity-jump guard" in w for w in on.warnings)
+
+
+def test_identity_jumps_ignore_gaps_and_need_enough_core_landmarks():
+    lm = np.stack([person(0.40, 0.6), np.full((33, 5), np.nan), person(0.40, 0.6), person(0.70, 0.6)])
+    j = identity_jumps(lm)
+    assert np.isnan(j[0]) and np.isnan(j[1])  # first frame, absent frame
+    assert j[2] == 0.0  # compared with the last frame in which the track was present
+    assert j[3] > 1.0
+    lm[3, [0, 11, 12]] = np.nan  # only the hips left: too few core landmarks to judge
+    assert np.isnan(identity_jumps(lm)[3])

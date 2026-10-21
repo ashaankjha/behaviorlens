@@ -566,3 +566,93 @@ Prompted by 6HR54 (above): if the tracker alternates a track between two intermi
 **Measured exposure: 4 of 77 rules-v0.3 Charades events (5 %) are cross-person, all hand raises; none of the 6 stand-ups.** A further 5 come from a person/phantom switch (H-03's phantom-pose cause). This is a **lower bound**: the 58 unflagged events were not viewed, and a switch between two similarly posed, overlapping people can jump less than 0.8. Fixed-camera datasets were not audited (mostly single-subject).
 
 **Candidate mitigation (not shipped; needs a pre-registered tune/holdout cycle).** Treat subject frames after a large landmark-level identity jump as unobservable for a short window, or split the track at such jumps before subject selection. Both would remove the 6HR54 and HOI88 mechanism, but the jump threshold trades against fast real movement (10 of 19 flagged events were one person), so its recall cost must be measured on the tune split with "no tune hit lost" as a constraint (as for camera motion, M30). Draft risk entry updated: `docs/regulatory/risk_management.md` H-03 and gap G-12.
+
+## Identity-jump guard (Phase 4, pre-registered)
+
+Run date: 2026-10-20. **Question:** the H-03 audit (above) found rules-v0.3 subject tracks that alternate between two intermittently detected people, or between a person and a phantom pose. Does an opt-in guard that turns evidence after a landmark-level identity jump into *unobservable* remove those events, at a recall cost small enough to justify enabling it?
+
+**Code added for this cycle (behaviour unchanged by default).** `TrackingParams.identity_jump_guard` ∈ {`off` (default), `mask`, `split`}, `identity_jump_threshold` and `identity_jump_mask_s` (`tracking.identity_jumps`, `TrackingResult.jump_masked_frames`, `tracking.split_at_identity_jumps`). The jump is the audit's proxy, made production code: the median displacement of nose, shoulders and hips between consecutive frames in which a track is present, divided by the track's size in the earlier frame (√ of its all-landmark box area). **(a) `mask`:** the subject's frames from each jump on, for `identity_jump_mask_s`, are NaN (unobservable) for the rules; track membership is unchanged. **(b) `split`:** every track is cut at each jump into separate tracks before subject selection (after `merge_fragments`, so merging cannot rejoin them); the subject is chosen among the pieces as usual, and the other pieces' frames are unobservable for it. Neither variant fills in or guesses anything. When the guard acts, stats carry `identity_jump_guard` and the reviewer gets a warning. Tests: `tests/test_tracking.py` (alternating nearby people and a hand-raise handover produce no stitched event under either variant; fast single-person stand-ups and arm raises keep their events at thresholds 0.8 and 1.0; a single switch outlasting the mask window is still stitched under `mask` but not under `split`), `tests/test_pipeline.py::test_identity_jump_guard_runs_on_the_production_tracking_path` (`run_analysis` → `extract_multi_pose` → tracking → subject → rules).
+
+### Pre-registration (written and committed before any tune result for the guard was computed)
+
+> **Disclosure.** Before writing this, (i) rules-v0.3 (guard off) was re-run on all 126 Charades videos to pin the audited events (77 events, 71 `hand_raised` and 6 `standing_transition`, matching the audit); (ii) two TCV1W events and one DB4WX event were viewed with the subject box drawn, to identify which TCV1W event the audit meant; (iii) synthetic tests were written. No real-video output of any guard setting has been computed. With the production jump definition the DB4WX person switch (seated person → standing woman at 14.2 s) measures **0.84**, so thresholds above that may not remove it. The audit proxy itself flags 21 events here, not 19 (it normalises by the earlier frame's size; the audit's script was not committed); the 9 audited events below are pinned by clip and interval, not by the proxy.
+>
+> **The 9 audited Charades events (safety set, rules-v0.3 intervals).** Cross-person (4, all **tune**): DB4WX `hand_raised` 13.60–14.21 s; HOI88 `hand_raised` 9.58–10.20, 15.00–15.62, 16.21–16.99 s. Person ↔ phantom switch (5): 03OQS 3.60–4.40 (tune), 8OHDL 1.20–2.00 (tune), TU3IG 16.00–18.00 (tune), 06EDS 24.40–25.00 (**holdout**), TCV1W 28.81–29.78 (**holdout**), all `hand_raised`. A setting **removes** an audited event if none of its events of the same type overlaps the audited interval (strict overlap, no tolerance). An overlapping, shortened event counts as not removed.
+>
+> **Data.** Pooled **tune** split = tune halves of Charades (legacy key), UTKinect, PKU-MMD Phase 1 (the evaluated subset, `--limit 85 --stride 4`) and Phase 2 (front view), as in Phases 2–3, plus the UCF101 tune half for `hand_raised` (per clip). **Data freeze:** Google Drive's per-file quota is blocking PKU-MMD downloads at the time of writing (2 of 333 Phase 2 videos fetched; Phase 1 none). The fetch is retried for up to ~9 hours; the PKU-MMD videos (and Kinect skeletons) on disk when the guard's tune extraction starts are frozen, and their counts and ids are committed in an amendment **before** any guard result is computed. Videos fetched later are not added to this cycle. Proceed with the recall-cost selection only if the frozen pooled tune split holds ≥ 25 `standing_transition` windows; otherwise report the Charades safety result alone, with the verdict "recall cost not measured (n < 25)" and no adoption recommendation.
+>
+> **`hand_raised` reference.** Fixed-camera data: the Kinect-skeleton reference (`scripts/skeleton_adjudication.py`, single-subject videos). If the PKU-MMD skeletons are still unavailable at the freeze, PKU-MMD `hand_raised` is scored against its *hand waving* labels (windows found) and UTKinect against its skeletons; the amendment states which. UCF101: the per-clip protocol (arms-overhead classes should yield ≥ 1 event). Charades has no `hand_raised` labels; its hand events enter only through the safety set and the viewing below.
+>
+> **Fixed.** `pose_landmarker_lite`, 5 fps, `num_poses = 4`, tracked attribution, all RuleParams and other TrackingParams at rules-v0.3 (`merge_fragments = false`), `--tol 1.0`.
+>
+> **Grid (12 settings).** `mask`: `identity_jump_threshold` ∈ {0.8, 1.0, 1.2} × `identity_jump_mask_s` ∈ {0.6, 1.0, 2.0} s; `split`: threshold ∈ {0.8, 1.0, 1.2}. Reference: rules-v0.3 (**C**, guard off).
+>
+> **Constraint (as for camera motion, M30), pooled tune, each setting against C.** Hits lost are counted per video as max(0, windows found by C − windows found by the setting), summed. (1) `standing_transition` windows lost ≤ **1**; (2) fixed-camera `hand_raised` reference windows lost ≤ **max(1, 1 % of C's found)**; (3) UCF101 tune arms-overhead clips with an event lost = **0**. Settings violating any of these are infeasible.
+>
+> **Objective among feasible settings, in order.** (1) Most of the 4 tune cross-person events removed; (2) most of the 3 tune phantom-switch events removed; (3) fewest pooled-tune hits lost (sum of the three constraint counts); (4) fewest Charades tune events removed in total (collateral removal of possibly real events); then (5) the higher threshold, (6) `mask` before `split`, (7) the shorter mask window. The 2 holdout phantom events are reported, never used for selection.
+>
+> **Scoring, once each.** The selected setting **S** and **C** on the pooled holdout (per dataset and pooled; `standing_transition` and `hand_raised` with 95 % Wilson intervals; UCF101 holdout per clip). **Holdout reuse disclosed:** this is the 4th use of the fixed-camera pooled holdout (rules-v0.3 measurement, Phase 2, Phase 3) and Charades' and UCF101's holdouts have been scored in every cycle since rules-v0.2; all 126 Charades videos were also viewed for the H-03 audit.
+>
+> **Viewing (scratch only, never committed).** Every Charades event (all splits) that S removes (C has it, S has no overlapping same-type event) or adds (S has it, C has no overlapping same-type event) is viewed with the subject track drawn and classified as one person, two people, or person/phantom. Any **new** cross-person event found among S's added events is counted against S.
+>
+> **Adoption rule (decided now; safety first).** Recommend enabling S by default in the next rules version only if **all** hold: (1) S removes **all 4** audited cross-person events; (2) viewing finds **no new cross-person event** among S's added Charades events; (3) pooled-holdout `standing_transition` F1(S) ≥ F1(C) − 0.02, fixed-camera `hand_raised` reference F1(S) ≥ F1(C) − 0.02, and S finds events in no fewer UCF101 holdout arms-overhead clips than C minus 1. If (2) and (3) hold but S removes only 1–3 of the 4, recommend keeping the guard **opt-in** (a reviewer option, default off) and record S as the candidate. If no setting is feasible, or (2) or (3) fails, recommend keeping it off. `config.py` defaults and `ALGORITHM_VERSION` are not changed in this cycle; adoption is the maintainer's decision.
+>
+> **Predicted limitation (stated before results).** `mask` is a window, not a cut: a single clean switch whose second person stays in view longer than the window still contributes evidence after it (pinned in a synthetic test). `split` has no such gap but removes every frame of the non-subject pieces.
+>
+> **Amendment 1: data freeze (committed before any guard result was computed).** Google Drive's per-file quota blocked PKU-MMD for the whole retry window and beyond (2026-10-20 10:40 to 2026-10-21 00:05 UTC, about 13 h: 16 attempts at the skeleton archives and 8 fetch rounds over all videos; the PKU-MMD mirror page only adds Baidu Pan links). Frozen data: **Charades 126** (65 tune, 61 holdout), **UCF101 40** (22 tune, 18 holdout), **UTKinect 20** (7 tune, 13 holdout), **PKU-MMD Phase 1: 1 video** (0350, tune), **Phase 2: 6 videos** (A01N02, A03N13 tune; A01N01, A02N11, A07N04, A07N06 holdout). Kinect skeletons: **UTKinect only** (both PKU-MMD skeleton archives were blocked), so PKU-MMD `hand_raised` is scored against its *hand waving* labels. **The frozen pooled tune split holds 17 `standing_transition` windows (Charades 9, UTKinect 7, PKU-MMD 1), fewer than 25, so the pre-registered fallback applies: the verdict is "recall cost not measured (n < 25)" and there is no adoption recommendation.**
+>
+> Reporting under the fallback, decided now, before any guard output exists. (a) **Safety grid:** for all 12 settings and C, on all 126 Charades videos, which of the 9 audited events each removes (split by tune/holdout), and how many Charades events each removes or adds in total. (b) **Safety-only candidate S\***: the setting chosen by objective items (1), (2) and (4)–(7) over all 12 settings; the recall constraint cannot act as a filter at n = 17 and is reported instead (item 3 is skipped). Every Charades event S\* removes or adds (all splits) is viewed and classified, as pre-registered for S. (c) **Descriptive recall cost, exploratory:** for every setting, hits lost on the frozen tune data under the three constraint definitions, and S\* against C scored **once** on the frozen holdout (Charades 10, UTKinect 13, PKU-MMD 1 stand-up windows; UTKinect skeleton and PKU-MMD label `hand_raised`; UCF101 per clip) with Wilson intervals. These numbers are underpowered and are not evidence for adoption.
+
+### Phase 4 results (frozen data, Amendment 1)
+
+**Verdict under the pre-registration: recall cost not measured (n = 17 < 25); no adoption recommendation.** The guard stays off by default. What follows is the pre-stated fallback reporting.
+
+**(a) Safety grid.** All 126 Charades videos; "removed" = no overlapping same-type event left. C (rules-v0.3) has 77 events.
+
+| Setting | Cross-person removed (of 4, tune) | Phantom removed (of 3 tune / of 2 holdout) | Charades events removed (tune / holdout) | added (tune / holdout) | Tune hits lost: stand-up · skeleton hand · UCF101 |
+|---|---|---|---|---|---|
+| mask 0.8, 0.6 s | 1 | 0 / 1 | 2 / 2 | 0 / 0 | 0 · 0 · 0 |
+| mask 0.8, 1.0 s | 1 | 0 / 1 | 3 / 2 | 0 / 0 | 0 · 0 · 0 |
+| mask 0.8, 2.0 s | 3 | 2 / 2 | 7 / 7 | 0 / 0 | 0 · 0 · 0 |
+| mask 1.0, 0.6 / 1.0 / 2.0 s | 0 / 0 / 1 | 0 / 0 / 0 · 1 / 1 / 2 | 1 / 2 / 3 · 2 / 2 / 6 | 0 | 0 · 0 · 0 |
+| mask 1.2, 0.6 / 1.0 / 2.0 s | 0 | 0 · 0 / 0 / 1 | 0 / 1 / 1 · 1 / 1 / 4 | 0 | 0 · 0 · 0 |
+| **split 0.8 (S\*)** | **4** | **3 / 2** | 12 / 16 | 2 / 4 | 1 · 1 · 0 |
+| split 1.0 | 4 | 1 / 2 | 10 / 14 | 1 / 4 | 1 · 1 · 0 |
+| split 1.2 | 3 | 1 / 1 | 7 / 11 | 0 / 3 | 1 · 1 · 0 |
+
+(Frozen tune data: 17 stand-up windows, 20 UTKinect skeleton `hand_raised` windows, 10 UCF101 arms-overhead clips. Every `mask` setting loses nothing there; every `split` setting loses the same stand-up (Charades V1PRP, C's only correct Charades tune stand-up) and one UTKinect wave.)
+
+**(b) Safety-only candidate S\* = `identity_jump_guard = "split"`, `identity_jump_threshold = 0.8`** (objective items 1–2: the only setting removing all 4 cross-person and all 3 tune phantom events). It removes **all 9 audited events**, including the 2 holdout phantoms it was not selected on.
+
+As predicted, the jump threshold sits close to real switches: the DB4WX switch measures 0.84 (kept by `split 1.2`), and `mask` keeps HOI88 16.21–16.99 s even at 2 s because evidence after the window still forms an event. No `mask` setting removed all 4.
+
+**Viewing (scratch only, never committed).** All 6 events S\* adds and 16 of the 28 it removes were viewed for this cycle; the other 12 removed events were viewed in the H-03 audit (same subject drawing), and their audit classification is used.
+
+| S\* change on Charades | Events | Classification |
+|---|---|---|
+| Added | 6 | **All one person**: DC94A ×2 and E23CT (reaching up to a shelf or a switch), 6HR54 (the seated woman drinking; she is now her own track piece), E64R4 (putting on a jacket), 03OQS 21.8 s (handling clothes). **No new cross-person event.** |
+| Removed: audited cross-person | 4 | DB4WX, HOI88 ×3 (two people) |
+| Removed: audited phantom switches | 5 | 03OQS, 8OHDL, TU3IG, 06EDS, TCV1W 28.8 s |
+| Removed: one person | 19 | Includes **real movements**: V1PRP stand-up (a labelled hit), PKEZI stand-up (a girl stands up from a bed; unlabelled, so scored as a false positive), Q01UB ×3 (arms up while putting on a jacket), and hand-at-head poses in R6CIX, V1PRP, 406LH, SFPJ7 ×2 and E6IL3 (people lying or seated). The others are the audit's fast or partial-pose events (406LH, E64R4, E6IL3, MI76A, VIKQG, WXMTI ×2, TCV1W 5.6 s). |
+
+**Why `split` costs real events.** None of the 19 one-person removals is a person moving fast. Two mechanisms:
+- **Partial poses jump.** MediaPipe sometimes squeezes the whole skeleton onto the legs (V1PRP, on stairs under a following camera) or onto the visible half of a person at the frame edge (UTKinect s06_e01), or onto a bent body (UTKinect s09_e01, picking something up). The body core then moves by 0.8–1.8 body sizes in one frame without any change of person.
+- **Subject selection after splitting.** Once a track is cut, the subject is re-chosen among the pieces by coverage × size. The piece holding the event often loses, so events far from any jump disappear: Q01UB, SFPJ7 and R6CIX had no jump near the event. This is the fragmentation failure of LEARNINGS M44, now introduced by the guard itself.
+
+**(c) Descriptive recall cost, frozen holdout (scored once; underpowered, not evidence for adoption).**
+
+| Holdout | `standing_transition` recall | precision | F1 | Skeleton `hand_raised` (UTKinect) | UCF101 arms-overhead clips with an event |
+|---|---|---|---|---|---|
+| C rules-v0.3 | 0.50 (12/24) [0.31–0.69] | 0.63 (12/19) [0.41–0.81] | 0.558 | recall 29/34, precision 30/35, F1 0.855 | 5/6 (3 FP of 12) |
+| S\* split 0.8 | 0.46 (11/24) [0.28–0.65] | 0.73 (11/15) [0.48–0.89] | 0.564 | identical | identical |
+
+Per dataset: Charades 2/10 · 2/5 → 2/10 · 2/3 (PKEZI's real but unlabelled stand-up and E64R4's false one removed); UTKinect 10/13 · 10/11 → **9/13 · 9/9** (s09_e01: one person bending and straightening jumps 0.88, and the later piece becomes the subject, losing a labelled and an unlabelled stand-up); PKU-MMD 0/1 · 0/3 both. C reproduces the published holdout rows exactly. Holdout reuse: 4th use of the fixed-camera holdout (now mostly UTKinect), about the 8th of Charades and UCF101.
+
+**Conclusion.**
+- **The mechanism works for the hazard.** Splitting tracks at a landmark jump of 0.8 removed every audited cross-person and phantom-switch event, including 2 held-out ones it was not selected on, and added no cross-person event.
+- **Its cost is not small, and not where expected.** It is not fast single-person movement but partial poses and re-selection of the subject. On Charades it removed 19 one-person events (several of them real) to remove 9 bad ones. On single-person fixed-camera video it cost one stand-up video and one wave of 20 + 20 tune and holdout windows. The frozen data cannot bound the cost (n = 17 tune and 24 holdout stand-ups).
+- **`mask`** never costs a tune hit, but removes at most 3 of the 4 cross-person events.
+- **Exact values:** S\* = `TrackingParams(identity_jump_guard="split", identity_jump_threshold=0.8)`; the code default stays `"off"` (threshold 1.0, mask window 1.0 s unused).
+- **Next cycle (not tested here).** Keep the subject on the piece continuing the unguarded subject's longest run rather than re-ranking pieces, and require the jump to coincide with a pose-quality change (for example, the box shrinking to a partial body) before cutting. Then re-measure on complete PKU-MMD data with the same safety set.
+
+Reproduce (scratch scripts, not committed): rules-v0.3 and the 12 settings were run in-process through `pipeline.analyze_multi_pose` on the cached landmarks (`pose_landmarker_lite`, 5 fps, `num_poses = 4`). The setting is reachable from the CLI as `python scripts/validate_real_video.py --split holdout --dataset charades,utkinect --tracking-params '{"identity_jump_guard": "split", "identity_jump_threshold": 0.8}'`.

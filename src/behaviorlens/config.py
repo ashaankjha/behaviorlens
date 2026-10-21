@@ -158,6 +158,9 @@ class RuleParams:
         return cls(**{k: v for k, v in data.items() if k in known})
 
 
+IDENTITY_JUMP_GUARDS = ("off", "mask", "split")
+
+
 @dataclass(frozen=True)
 class TrackingParams:
     """Frame-to-frame person tracking (tracking.py). Identity comes from position and size
@@ -197,6 +200,24 @@ class TrackingParams:
     merge_max_center_dist: float = 1.0
     # and box areas differing by at most this factor (medians over the frames at the junction).
     merge_max_size_ratio: float = 2.0
+    # Opt-in (experimental, off in rules-v0.3): identity-jump guard (hazard H-03, risk gap G-12).
+    # When MediaPipe returns only one of two nearby people per frame, the frame-to-frame tracker
+    # can alternate one track between them. Such a switch moves the head, shoulders and hips by
+    # about a body size between consecutive frames of the track (real switches in the Charades
+    # audit: 1.05-1.59 track sizes), which one person rarely does in 0.2 s.
+    # "off": no guard. "mask": the subject's frames from a jump on, for identity_jump_mask_s, are
+    # unobservable. "split": a track is cut at every jump into separate tracks before subject
+    # selection (and after fragment merging, so merging cannot rejoin the pieces).
+    identity_jump_guard: str = "off"
+    # Jump size: median displacement of nose, shoulders and hips between consecutive frames of a
+    # track, in units of the track's size in the earlier frame (sqrt of its landmark box area).
+    identity_jump_threshold: float = 1.0
+    identity_jump_mask_s: float = 1.0
+
+    def __post_init__(self) -> None:
+        if self.identity_jump_guard not in IDENTITY_JUMP_GUARDS:
+            raise ValueError(f"identity_jump_guard must be one of {IDENTITY_JUMP_GUARDS}, "
+                             f"got {self.identity_jump_guard!r}")
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
