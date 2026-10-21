@@ -310,7 +310,8 @@ def fetch_pkummd(name: str, limit: int | None, workers: int, stride: int | None 
     lab_dir = raw / "labels"
     if not lab_dir.is_dir():
         archive = raw / "labels.7z"
-        _download(drive_file_url(*cfg["labels"]), archive)
+        if not archive.is_file():  # an earlier run may have downloaded it but failed to unpack (no 7z)
+            _download(drive_file_url(*cfg["labels"]), archive)
         extract_7z(archive, lab_dir)
     label_files = {p.stem: p for p in lab_dir.rglob("*-M.txt")}
     files = {m.group(1): ids for n, ids in list_drive_folder(*cfg["rgb_folder"]).items()
